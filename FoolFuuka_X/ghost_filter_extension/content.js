@@ -1,0 +1,824 @@
+(() => {
+  "use strict";
+
+  const STORAGE_KEY = "ghostFilterHiddenPosts";
+  const KEYWORDS_KEY = "ghostFilterKeywords";
+  const USERNAMES_KEY = "ghostFilterUsernames";
+  const GHOST_ICON_MARKER = "data-ffx-ghost-icon";
+  const HIDDEN_MARKER = "data-ghost-filter-key";
+  const BUTTON_MARKER = "data-gf-hide-button-added";
+  const DISMISSED_FILTER = "data-gf-filter-dismissed";
+  const HIDE_REASON = "data-gf-hide-reason";
+  const ORIGINAL_DISPLAY = "data-gf-original-display";
+  const ORIGINAL_DISPLAY_PRIORITY = "data-gf-original-display-priority";
+
+  let hidden = new Set();
+  let keywords = [];
+  let usernames = [];
+  let scanQueued = false;
+  let scanning = false;
+
+  const style = document.createElement("style");
+  style.id = "ghost-filter-styles";
+  style.textContent = `
+    .gf-hidden-placeholder {
+      box-sizing: border-box; margin: 8px 0; padding: 8px 10px;
+      border: 1px dashed #777; border-radius: 4px;
+      color: #aaa; background: #292929;
+      font: 12px/1.4 Arial, sans-serif;
+    }
+    .gf-hidden-placeholder button {
+      margin-left: 8px; padding: 3px 8px;
+      border: 1px solid #666; border-radius: 3px;
+      background: #3b3b3b; color: #bbb;
+      cursor: pointer; font: 12px Arial, sans-serif;
+    }
+    .ffx-ghost-indicator { display:inline-flex !important; align-items:center !important; justify-content:center !important; width:18px !important; height:18px !important; margin:0 0 0 4px !important; vertical-align:middle !important; color:#d8d8d8 !important; line-height:1 !important; }
+    .ffx-ghost-indicator svg { display:block !important; width:18px !important; height:18px !important; fill:#d8d8d8 !important; color:#d8d8d8 !important; }
+    .ffx-bbcode-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:5px; margin:7px 0 5px; padding:7px; border:1px solid #555; border-radius:4px; background:#292929; }
+    .ffx-bbcode-toolbar button { min-width:30px; min-height:27px; padding:4px 8px; border:1px solid #666; border-radius:3px; background:#3b3b3b; color:#eee; font:13px/1.4 Arial,sans-serif; cursor:pointer; }
+    .ffx-bbcode-toolbar button:hover { background:#505050; border-color:#999; }
+    .ffx-bbcode-toolbar .ffx-bb-bold { font-weight:900; }
+    .ffx-bbcode-toolbar .ffx-bb-italic { font-style:italic; }
+    .ffx-bbcode-toolbar .ffx-bb-underline { text-decoration:underline; }
+    .ffx-bbcode-toolbar .ffx-bb-strike { text-decoration:line-through; }
+    .ffx-bbcode-toolbar .ffx-bb-spoiler { display:inline-flex; align-items:center; justify-content:center; }
+    .ffx-bbcode-toolbar .ffx-bb-spoiler svg { width:17px; height:17px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+    .ffx-bbcode-toolbar .ffx-bb-code { font-family:monospace; font-weight:bold; }
+    .ffx-bbcode-toolbar .ffx-bb-banned { color:#ff0000 !important; font-weight:900; }
+    .ffx-b4k-nav-link { display:inline-block !important; margin:2px 7px !important; padding:3px 7px !important; border:1px solid #777 !important; border-radius:3px !important; color:#fff !important; background:#343434 !important; font:12px/1.4 Arial,sans-serif !important; text-decoration:none !important; white-space:nowrap !important; }
+    .ffx-b4k-nav-link:hover { background:#505050 !important; color:#fff !important; }
+    .gf-hide-button {
+      display: inline-block !important; visibility: visible !important;
+      opacity: 1 !important; margin: 3px 0 3px 7px !important;
+      padding: 2px 8px !important; border: 1px solid #555 !important;
+      border-radius: 3px !important; background: #3b3b3b !important;
+      color: #bdbdbd !important; font: 11px/1.5 Arial,sans-serif !important;
+      cursor: pointer !important; vertical-align: middle !important;
+      box-shadow: none !important; text-shadow: none !important;
+    }
+    .gf-hide-button:hover {
+      background: #4a4a4a !important; color: #e0e0e0 !important;
+      border-color: #777 !important;
+    }
+  `;
+  (document.head || document.documentElement).appendChild(style);
+
+  function storageGet(defaults) {
+    return new Promise(resolve => chrome.storage.local.get(defaults, resolve));
+  }
+  function storageSet(values) {
+    return new Promise(resolve => chrome.storage.local.set(values, resolve));
+  }
+  async function load() {
+    const data = await storageGet({ [STORAGE_KEY]: [], [KEYWORDS_KEY]: [], [USERNAMES_KEY]: [] });
+    hidden = new Set(Array.isArray(data[STORAGE_KEY]) ? data[STORAGE_KEY] : []);
+    keywords = normalizeKeywords(data[KEYWORDS_KEY]);
+    usernames = normalizeKeywords(data[USERNAMES_KEY]);
+  }
+  function normalizeKeywords(value) {
+    const list = Array.isArray(value) ? value : [];
+    return [...new Set(list.map(v => String(v).trim()).filter(Boolean))];
+  }
+
+  function boardName() {
+    return location.pathname.split("/").filter(Boolean)[0] || "unknown";
+  }
+  function parsePost(node) {
+    const candidates = [node.getAttribute("data-post-id"), node.getAttribute("data-num"), node.id].filter(Boolean);
+    for (const raw of candidates) {
+      const match = String(raw).match(/(?:^|[^0-9])(\d+)(?:_(\d+))?$/);
+      if (match) return { num: match[1], subnum: match[2] || null };
+    }
+    for (const link of node.querySelectorAll('a[href*="#"], a[href*="/thread/"]')) {
+      const raw = `${link.getAttribute("href") || ""} ${link.id || ""}`;
+      const match = raw.match(/(?:#|\/)(\d+)(?:_(\d+))?(?:$|[/?&])/);
+      if (match) return { num: match[1], subnum: match[2] || null };
+    }
+    return null;
+  }
+  function isGhost(node, parsed) {
+    if (!parsed || parsed.subnum === null || !/^[1-9]\d*$/.test(parsed.subnum)) return false;
+    const cls = typeof node.className === "string" ? node.className : "";
+    const marker = [node.id || "", cls, node.getAttribute("data-post-id") || "", node.getAttribute("data-num") || ""].join(" ").toLowerCase();
+    return node.matches(".post, .post_wrapper, .thread, [data-post-id], [data-num]") &&
+      (/post|reply|thread/.test(marker) || node.matches(".post, .post_wrapper"));
+  }
+  function postNodes() {
+    const nodes = document.querySelectorAll(".post, .post_wrapper, .thread .post, [data-post-id], [data-num]");
+    return [...new Set(nodes)].filter(node => node instanceof HTMLElement);
+  }
+  function keyFor(parsed) {
+    return `${location.hostname}|${boardName()}|${parsed.num}_${parsed.subnum}`;
+  }
+  function postIdFromKey(key) { return key.split("|").pop(); }
+
+  function actuallyHide(post) {
+    if (!post.hasAttribute(ORIGINAL_DISPLAY)) {
+      post.setAttribute(ORIGINAL_DISPLAY, post.style.getPropertyValue("display"));
+      post.setAttribute(ORIGINAL_DISPLAY_PRIORITY, post.style.getPropertyPriority("display"));
+    }
+    post.hidden = true;
+    post.style.setProperty("display", "none", "important");
+    post.style.setProperty("visibility", "hidden", "important");
+  }
+  function restoreVisibility(post) {
+    post.hidden = false;
+    post.style.removeProperty("visibility");
+    const oldDisplay = post.getAttribute(ORIGINAL_DISPLAY);
+    const oldPriority = post.getAttribute(ORIGINAL_DISPLAY_PRIORITY) || "";
+    if (oldDisplay) post.style.setProperty("display", oldDisplay, oldPriority);
+    else post.style.removeProperty("display");
+    post.removeAttribute(ORIGINAL_DISPLAY);
+    post.removeAttribute(ORIGINAL_DISPLAY_PRIORITY);
+  }
+
+  function hidePost(post, key, reason = "manual") {
+    if (post.hasAttribute(HIDDEN_MARKER)) {
+      actuallyHide(post);
+      return;
+    }
+    const placeholder = document.createElement("div");
+    placeholder.className = "gf-hidden-placeholder";
+    placeholder.textContent = `Ghost post hidden (${postIdFromKey(key)}). `;
+    const reveal = document.createElement("button");
+    reveal.type = "button";
+    reveal.textContent = "Reveal";
+    reveal.addEventListener("click", async () => {
+      if (reason === "keyword" || reason === "username") post.setAttribute(DISMISSED_FILTER, "1");
+      if (reason === "manual") {
+        hidden.delete(key);
+        await storageSet({ [STORAGE_KEY]: [...hidden] });
+      }
+      restoreVisibility(post);
+      post.removeAttribute(HIDDEN_MARKER);
+      post.removeAttribute(HIDE_REASON);
+      // Keep BUTTON_MARKER and the existing button: rescanning must not append another.
+      placeholder.replaceWith(post);
+      scheduleScan();
+    });
+    placeholder.appendChild(reveal);
+    post.setAttribute(HIDDEN_MARKER, key);
+    post.setAttribute(HIDE_REASON, reason);
+    post.insertAdjacentElement("beforebegin", placeholder);
+    actuallyHide(post);
+  }
+
+  function addHideButton(post, key) {
+    // The marker alone is not enough: also detect an existing button in case the
+    // post was restored/reparented by the archive's own DOM updates.
+    if (post.querySelector(".gf-hide-button")) {
+      post.setAttribute(BUTTON_MARKER, "1");
+      return;
+    }
+    if (post.hasAttribute(BUTTON_MARKER)) post.removeAttribute(BUTTON_MARKER);
+    if (post.hasAttribute(HIDDEN_MARKER)) return;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "gf-hide-button";
+    button.textContent = "Hide";
+    button.title = "Hide this individual ghost post";
+    button.addEventListener("click", async event => {
+      event.preventDefault();
+      event.stopPropagation();
+      button.disabled = true;
+      hidden.add(key);
+      await storageSet({ [STORAGE_KEY]: [...hidden] });
+      hidePost(post, key, "manual");
+    });
+    const header = post.querySelector(".post_head, .post-header, .posthead, header");
+    if (header) header.appendChild(button);
+    else post.insertBefore(button, post.firstChild);
+    post.setAttribute(BUTTON_MARKER, "1");
+  }
+
+  function matchedKeyword(post) {
+    if (!keywords.length || post.hasAttribute(DISMISSED_FILTER)) return null;
+    const content = (post.innerText || post.textContent || "").toLocaleLowerCase();
+    return keywords.find(word => content.includes(word.toLocaleLowerCase())) || null;
+  }
+
+  function posterUsername(post) {
+    const node = post.querySelector(".postername, .poster_name, .poster-name, .post_author, .post-author, .name");
+    if (!node) return "";
+    return (node.innerText || node.textContent || "").trim().replace(/\s+/g, " ");
+  }
+
+  function matchedUsername(post) {
+    if (!usernames.length || post.hasAttribute(DISMISSED_FILTER)) return null;
+    const username = posterUsername(post).toLocaleLowerCase();
+    if (!username) return null;
+    return usernames.find(entry => username === entry.toLocaleLowerCase()) || null;
+  }
+
+  function postVisualRoot(post) {
+    // FoolFuuka commonly places .postInfo beside .post_wrapper inside an article,
+    // rather than inside the wrapper itself. Include that outer article when
+    // looking for the post's reply/speech-bubble controls.
+    return post.closest('article') || post.closest('.thread') || post.parentElement || post;
+  }
+
+  function speechBubbleTarget(post) {
+    // FoolFuuka's post-number/reply control is normally in the post header.
+    // Search the post itself first (the same scope used by addHideButton),
+    // then its containing article for themes that split metadata into a sibling.
+    const root = post.closest('article') || post;
+    const selectors = [
+      '.postInfo a[href*="#"]', '.postInfo .postNum', '.postInfo .post_num',
+      '.post-info a[href*="#"]', '.post-info .postNum',
+      '.post_head a[href*="#"]', '.post-header a[href*="#"]',
+      '.posthead a[href*="#"]', '.post_no a', '.post-no a',
+      '.post_num a', '.post-number a', '.postNum',
+      'a[title*="reply" i]', 'a[aria-label*="reply" i]',
+      'a[title*="comment" i]', 'a[aria-label*="comment" i]',
+      '.fa-comment', '.fa-comments', '.fa-comment-o', '.fa-reply',
+      '.glyphicon-comment', '[class*="comment-icon"]', '[class*="reply-icon"]'
+    ];
+    for (const scope of [...new Set([post, root])]) {
+      for (const selector of selectors) {
+        const found = scope.querySelector(selector);
+        if (found && !found.closest('.ffx-ghost-indicator')) return found.closest('a') || found;
+      }
+    }
+    return null;
+  }
+
+  function addGhostBoardIcon(post) {
+    // Reuse the exact post node and header in which the Hide button has
+    // already been installed. This avoids a second, stricter post detector.
+    let icon = post.querySelector('.ffx-ghost-indicator');
+    if (!icon) {
+      icon = document.createElement('span');
+      icon.className = 'ffx-ghost-indicator';
+      icon.setAttribute('role', 'img');
+      icon.setAttribute('aria-label', 'Ghost post');
+      icon.title = 'Ghost post';
+
+      // Traced, self-contained SVG based on the user-approved ghost artwork.
+      // The broad raised arms, tall domed body, scalloped hem, oval eyes,
+      // open smile, and tongue are explicit vector paths (never an emoji font).
+      const ns = 'http://www.w3.org/2000/svg';
+      const svg = document.createElementNS(ns, 'svg');
+      svg.setAttribute('viewBox', '0 0 1280 1280');
+      svg.setAttribute('width', '18');
+      svg.setAttribute('height', '18');
+      svg.setAttribute('aria-hidden', 'true');
+      svg.setAttribute('focusable', 'false');
+      const addPath = (d, fill, stroke = null, strokeWidth = null) => {
+        const path = document.createElementNS(ns, 'path');
+        path.setAttribute('d', d);
+        path.setAttribute('fill', fill);
+        if (stroke) path.setAttribute('stroke', stroke);
+        if (strokeWidth) path.setAttribute('stroke-width', strokeWidth);
+        path.setAttribute('stroke-linejoin', 'round');
+        path.setAttribute('stroke-linecap', 'round');
+        svg.appendChild(path);
+      };
+      const addEllipse = (cx, cy, rx, ry, fill) => {
+        const eye = document.createElementNS(ns, 'ellipse');
+        eye.setAttribute('cx', cx); eye.setAttribute('cy', cy);
+        eye.setAttribute('rx', rx); eye.setAttribute('ry', ry);
+        eye.setAttribute('fill', fill); svg.appendChild(eye);
+      };
+      addPath('M640 29 C425 29 269 190 245 477 C211 463 179 437 145 408 C98 369 53 377 31 417 C4 466 38 555 80 610 C118 659 168 687 211 697 C211 788 198 865 169 950 C144 1024 147 1069 181 1090 C224 1117 283 1105 344 1062 C395 1027 427 1005 469 1005 C521 1005 556 1068 640 1090 C724 1068 759 1005 811 1005 C853 1005 885 1027 936 1062 C997 1105 1056 1117 1099 1090 C1133 1069 1136 1024 1111 950 C1082 865 1069 788 1069 697 C1112 687 1162 659 1200 610 C1242 555 1276 466 1249 417 C1227 377 1182 369 1135 408 C1101 437 1069 463 1035 477 C1011 190 855 29 640 29 Z', '#f4f4f4', '#4b4b50', 15);
+      addEllipse(490, 374, 70, 90, '#343238');
+      addEllipse(790, 374, 70, 90, '#343238');
+      addPath('M454 511 C510 530 770 530 826 511 C840 507 839 526 832 551 C808 638 752 704 640 704 C528 704 472 638 448 551 C441 526 440 507 454 511 Z', '#343238');
+      addPath('M610 581 C574 581 551 609 551 660 C551 740 579 808 640 808 C701 808 729 740 729 660 C729 609 706 581 670 581 Z', '#ef648b');
+      icon.appendChild(svg);
+    }
+
+    // Prefer the actual speech-bubble/reply link. If the page's theme uses
+    // different markup, fall back to the Hide button's proven insertion spot.
+    const bubble = speechBubbleTarget(post);
+    const hideButton = post.querySelector('.gf-hide-button');
+    const anchor = bubble || hideButton;
+    if (anchor && anchor.parentElement) {
+      if (icon.parentElement !== anchor.parentElement || icon.previousElementSibling !== anchor) {
+        anchor.insertAdjacentElement('afterend', icon);
+      }
+    } else {
+      // This is intentionally the same header selection and append behavior
+      // used by addHideButton(), rather than a separate layout guess.
+      const header = post.querySelector('.post_head, .post-header, .posthead, header');
+      if (header) header.appendChild(icon);
+      else post.insertBefore(icon, post.firstChild);
+    }
+
+    for (const [property, value] of Object.entries({
+      display: 'inline-flex', visibility: 'visible', opacity: '1',
+      color: '#d8d8d8', width: '18px', height: '18px',
+      'vertical-align': 'middle', 'margin-left': '5px',
+      'margin-right': '2px', 'flex-shrink': '0', 'position': 'relative',
+      'z-index': '2', 'line-height': '1', 'pointer-events': 'none'
+    })) icon.style.setProperty(property, value, 'important');
+  }
+
+  function installB4KBoardRouting() {
+    const onDesuarchive = location.hostname === 'desuarchive.org' || location.hostname.endsWith('.desuarchive.org');
+    const onFourChanBoards = location.hostname === 'boards.4chan.org' || location.hostname === 'boards.4channel.org';
+    if (!onDesuarchive && !onFourChanBoards) return;
+
+    const isVGPath = pathname => pathname.split('/').filter(Boolean)[0]?.toLowerCase() === 'vg';
+    const isDesuarchiveUrl = url => url.hostname === 'desuarchive.org' || url.hostname.endsWith('.desuarchive.org');
+    const isFourChanUrl = url => url.hostname === 'boards.4chan.org' || url.hostname === 'boards.4channel.org';
+    // Desuarchive quote links may point directly to 4chan's canonical host.
+    const isArchivedMoeSourceLink = url => isDesuarchiveUrl(url) || (onDesuarchive && isFourChanUrl(url));
+    const archivedMoeBoards = new Set([
+      '3', 'adv', 'b', 'bant', 'biz', 'ck', 'cm', 'diy', 'e', 'f', 'fa',
+      'gd', 'gif', 'h', 'hc', 'hm', 'hr', 'i', 'ic', 'jp', 'lgbt', 'lit',
+      'n', 'news', 'o', 'out', 'p', 'po', 'pol', 'pw', 'qst', 's', 's4s',
+      'sci', 'soc', 'sp', 't', 'toy', 'trv', 'tv', 'u', 'v', 'vip', 'vm',
+      'vmg', 'vp', 'vrpg', 'vst', 'vt', 'w', 'wg', 'wsr', 'x', 'xs', 'y'
+    ]);
+    const resolvedPostUrls = new Map();
+    const resolvedMoePostUrls = new Map();
+
+    const getPostNumber = url => {
+      const hashMatch = url.hash.match(/(?:^|[#&])(?:q|p)?(\d+)/i);
+      if (hashMatch) return hashMatch[1];
+      const match = url.pathname.match(/^\/vg\/(?:thread|post)\/(\d+)/i);
+      return match ? match[1] : null;
+    };
+
+    const requestThreadNumber = postNumber => {
+      if (!/^\d+$/.test(String(postNumber || ''))) return Promise.resolve(null);
+      if (resolvedPostUrls.has(postNumber)) return resolvedPostUrls.get(postNumber);
+      const request = new Promise(resolve => {
+        try {
+          chrome.runtime.sendMessage(
+            { type: 'FFX_RESOLVE_VG_POST', postNumber: String(postNumber) },
+            response => {
+              if (chrome.runtime.lastError) return resolve(null);
+              resolve(response?.threadNumber ? String(response.threadNumber) : null);
+            }
+          );
+        } catch (_) { resolve(null); }
+      });
+      resolvedPostUrls.set(postNumber, request);
+      return request;
+    };
+
+    const resolveVGTarget = async url => {
+      if (!isVGPath(url.pathname)) return null;
+      const match = url.pathname.match(/^\/vg\/(thread|post)\/(\d+)\/?$/i);
+      if (match) {
+        const postNumber = getPostNumber(url);
+        const threadNumber = await requestThreadNumber(postNumber);
+        if (threadNumber) {
+          return `https://arch.b4k.dev/vg/thread/${threadNumber}/#q${postNumber}`;
+        }
+        // If the lookup is temporarily unavailable, preserve the original destination
+        // rather than fabricating a thread number.
+        return `https://arch.b4k.dev/vg/post/${postNumber}/#q${postNumber}`;
+      }
+      return `https://arch.b4k.dev${url.pathname}${url.search}${url.hash}`;
+    };
+
+    const archivedMoeBoardFromPath = pathname => {
+      const board = pathname.split('/').filter(Boolean)[0]?.toLowerCase();
+      return board && archivedMoeBoards.has(board) ? board : null;
+    };
+
+    const requestArchivedMoeThreadNumber = (board, postNumber) => {
+      if (!/^[a-z0-9]+$/i.test(String(board || '')) || !/^\d+$/.test(String(postNumber || ''))) {
+        return Promise.resolve(null);
+      }
+      const cacheKey = `${board}|${postNumber}`;
+      if (resolvedMoePostUrls.has(cacheKey)) return resolvedMoePostUrls.get(cacheKey);
+      const request = new Promise(resolve => {
+        try {
+          chrome.runtime.sendMessage(
+            { type: 'FFX_RESOLVE_ARCHIVED_MOE_POST', board: String(board), postNumber: String(postNumber) },
+            response => {
+              if (chrome.runtime.lastError) {
+                console.warn('[FoolFuuka X] Archived.Moe thread lookup message failed:', chrome.runtime.lastError.message);
+                return resolve(null);
+              }
+              if (response?.threadNumber) {
+                console.info(`[FoolFuuka X] Resolved /${board}/${postNumber} to parent thread ${response.threadNumber}`, response.resolvedBy || 'archive API');
+                return resolve(String(response.threadNumber));
+              }
+              console.warn(`[FoolFuuka X] Could not resolve parent thread for /${board}/${postNumber}:`, response?.error || response);
+              resolve(null);
+            }
+          );
+        } catch (_) { resolve(null); }
+      });
+      resolvedMoePostUrls.set(cacheKey, request);
+      return request;
+    };
+
+    const resolveArchivedMoeTarget = async url => {
+      const board = archivedMoeBoardFromPath(url.pathname);
+      if (!board) return null;
+      const threadMatch = url.pathname.match(/^\/([a-z0-9]+)\/thread\/(\d+)\/?$/i);
+      const postMatch = url.pathname.match(/^\/([a-z0-9]+)\/post\/(\d+)\/?$/i);
+      const hashMatch = url.hash.match(/(?:^|[#&])(?:q|p)?(\d+)/i);
+
+      if (threadMatch && threadMatch[1].toLowerCase() === board) {
+        const linkedThreadNumber = threadMatch[2];
+        // Desuarchive cross-board quote links can encode a reply's post ID in
+        // the /thread/ path itself, with no fragment at all. In that case the
+        // path number is NOT necessarily the master thread ID: query it as a
+        // post and use the API's thread_num to find the containing thread.
+        // If a fragment exists, it is the more precise post ID to resolve.
+        const postNumber = hashMatch ? hashMatch[1] : linkedThreadNumber;
+        const parentThreadNumber = await requestArchivedMoeThreadNumber(board, postNumber);
+        if (parentThreadNumber) {
+          // A bare /thread/NUMBER/ link that resolves to a different parent
+          // is actually a reply link. Preserve that reply as the fragment.
+          // If the API says NUMBER is already the OP, leave the ordinary
+          // thread URL unchanged unless the source explicitly supplied a post
+          // fragment that should be preserved.
+          if (hashMatch || parentThreadNumber !== linkedThreadNumber) {
+            return `https://archived.moe/${board}/thread/${parentThreadNumber}/#${postNumber}`;
+          }
+        }
+        // If this path number was a reply ID but neither API could resolve it,
+        // never mislabel it as a thread. Use the archive's post route instead.
+        if (!hashMatch) {
+          console.warn(`[FoolFuuka X] Parent thread unknown; preserving ${postNumber} as a post ID on /${board}/`);
+          return `https://archived.moe/${board}/post/${postNumber}/#${postNumber}`;
+        }
+        // A supplied fragment is already an explicit post reference; retain it.
+        return `https://archived.moe/${board}/thread/${linkedThreadNumber}/${url.hash}`;
+      }
+
+      if (postMatch && postMatch[1].toLowerCase() === board) {
+        const postNumber = postMatch[2];
+        const threadNumber = await requestArchivedMoeThreadNumber(board, postNumber);
+        if (threadNumber) return `https://archived.moe/${board}/thread/${threadNumber}/#${postNumber}`;
+        // Do not send users to a guessed/non-thread destination when lookup fails.
+        // Leave the original Desuarchive URL in place; a later retry can resolve it.
+        return null;
+      }
+      return null;
+    };
+
+    const resolveArchiveTarget = async url => {
+      if (isVGPath(url.pathname)) return resolveVGTarget(url);
+      return resolveArchivedMoeTarget(url);
+    };
+
+    // Resolve archive post/thread links before navigating. On Desuarchive pages,
+    // this includes canonical 4chan-hosted cross-board quote links such as
+    // boards.4chan.org/gif/thread/123#p456, not only Desuarchive-hosted links.
+    document.addEventListener('click', async event => {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const link = event.target instanceof Element ? event.target.closest('a[href]') : null;
+      if (!link) return;
+      let url;
+      try { url = new URL(link.href, location.href); } catch (_) { return; }
+      const isVG = isVGPath(url.pathname);
+      const isMoePost = isArchivedMoeSourceLink(url) && !!archivedMoeBoardFromPath(url.pathname) && /\/(?:thread|post)\/\d+\/?$/i.test(url.pathname);
+      if (!isVG && !isMoePost) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const target = await resolveArchiveTarget(url);
+      if (target) location.assign(target);
+    }, true);
+
+    // Rewrite hrefs in advance so middle-click, copy-link, and open-in-new-tab
+    // also use the correct archive destination.
+    const rewriteArchiveLinks = root => {
+      const links = [];
+      if (root instanceof Element && root.matches('a[href]')) links.push(root);
+      if (root && root.querySelectorAll) links.push(...root.querySelectorAll('a[href]'));
+      for (const link of links) {
+        if (link.dataset.ffxArchiveResolving === '1') continue;
+        let url;
+        try { url = new URL(link.getAttribute('href'), location.href); } catch (_) { continue; }
+        const isVG = isVGPath(url.pathname);
+        const isMoePost = isArchivedMoeSourceLink(url) && !!archivedMoeBoardFromPath(url.pathname) && /\/(?:thread|post)\/\d+\/?$/i.test(url.pathname);
+        if (!isVG && !isMoePost) continue;
+        link.dataset.ffxArchiveResolving = '1';
+        resolveArchiveTarget(url).then(target => {
+          if (target && link.isConnected) link.href = target;
+          delete link.dataset.ffxArchiveResolving;
+        }).catch(() => { delete link.dataset.ffxArchiveResolving; });
+      }
+    };
+    rewriteArchiveLinks(document);
+    const routeObserver = new MutationObserver(mutations => {
+      for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) rewriteArchiveLinks(node);
+      }
+    });
+    routeObserver.observe(document.documentElement, { childList: true, subtree: true });
+
+    // Insert a separate plain-text slash prefix and a blue /vg/ link between /vr/ and /wsg/.
+    // The leading slash is deliberately outside the clickable anchor.
+    const addToArchivesList = () => {
+      const isBoardLink = (link, board) => {
+        try {
+          const url = new URL(link.getAttribute('href'), location.href);
+          return url.pathname.split('/').filter(Boolean)[0]?.toLowerCase() === board ||
+            link.textContent.trim().toLowerCase() === `/${board}/`;
+        } catch (_) {
+          return link.textContent.trim().toLowerCase() === `/${board}/`;
+        }
+      };
+
+      const candidates = [...document.querySelectorAll('body *')].filter(element =>
+        [...element.childNodes].some(node => node.nodeType === Node.TEXT_NODE && /Archives\s*:/i.test(node.textContent || ''))
+      );
+
+      // Boards confirmed to exist on both the current 4chan board directory and
+      // Archived.Moe, but not in Desuarchive's board list. /vg/ is omitted here
+      // because its existing entry is intentionally routed to B4K.
+      const archivedMoeOnlyBoards = [
+        '3', 'adv', 'b', 'bant', 'biz', 'ck', 'cm', 'diy', 'e', 'f', 'fa',
+        'gd', 'gif', 'h', 'hc', 'hm', 'hr', 'i', 'ic', 'jp', 'lgbt', 'lit',
+        'n', 'news', 'o', 'out', 'p', 'po', 'pol', 'pw', 'qst', 's', 's4s',
+        'sci', 'soc', 'sp', 't', 'toy', 'trv', 'tv', 'u', 'v', 'vip', 'vm',
+        'vmg', 'vp', 'vrpg', 'vst', 'vt', 'w', 'wg', 'wsr', 'x', 'xs', 'y'
+      ];
+
+      for (const label of candidates) {
+        let ancestor = label;
+        for (let depth = 0; depth < 9 && ancestor && ancestor !== document.body; depth++, ancestor = ancestor.parentElement) {
+          const links = [...ancestor.querySelectorAll('a[href]')];
+          const vr = links.find(link => isBoardLink(link, 'vr'));
+          const wsg = links.find(link => isBoardLink(link, 'wsg'));
+          if (!vr || !wsg || vr.parentElement !== wsg.parentElement) continue;
+
+          const parent = vr.parentElement;
+
+          // Put Archived.Moe's additional boards at the beginning of the
+          // Archive list. Keep native Desuarchive entries and the existing B4K
+          // /vg/ entry intact, and make insertion idempotent across DOM updates.
+          const firstNativeArchiveLink = links.find(link => {
+            try {
+              const url = new URL(link.getAttribute('href'), location.href);
+              return url.origin === location.origin && /^\/[a-z0-9]+\/?$/i.test(url.pathname);
+            } catch (_) {
+              return false;
+            }
+          });
+          if (firstNativeArchiveLink) {
+            const existingMoeBoards = new Set(
+              [...parent.querySelectorAll('a[data-ffx-archived-moe-board]')]
+                .map(link => link.getAttribute('data-ffx-archived-moe-board'))
+            );
+            const fragment = document.createDocumentFragment();
+            let insertedCount = 0;
+            for (const board of archivedMoeOnlyBoards) {
+              if (existingMoeBoards.has(board)) continue;
+              if (insertedCount > 0) fragment.appendChild(document.createTextNode(' '));
+              // Keep the visible /board/ notation, but make ONLY the board name
+              // clickable. The slash characters are separate text nodes.
+              fragment.appendChild(document.createTextNode('/'));
+              const archiveLink = vr.cloneNode(false);
+              archiveLink.removeAttribute('id');
+              archiveLink.setAttribute('data-ffx-archived-moe-board', board);
+              archiveLink.href = `https://archived.moe/${board}/`;
+              archiveLink.textContent = board;
+              archiveLink.title = `Open the /${board}/ archive on Archived.Moe`;
+              fragment.appendChild(archiveLink);
+              fragment.appendChild(document.createTextNode('/'));
+              // Separate the closing slash from the next board label (including
+              // the first native Desuarchive archive link after this block).
+              fragment.appendChild(document.createTextNode(' '));
+              insertedCount++;
+            }
+            if (insertedCount > 0) parent.insertBefore(fragment, firstNativeArchiveLink);
+          }
+
+          let vg = [...parent.querySelectorAll('a[data-ffx-b4k-archive-entry="1"]')][0];
+          let prefix = [...parent.querySelectorAll('[data-ffx-b4k-archive-prefix="1"]')][0];
+
+          if (!vg) {
+            vg = vr.cloneNode(false);
+            vg.removeAttribute('id');
+            vg.setAttribute('data-ffx-b4k-archive-entry', '1');
+          }
+          if (!prefix) {
+            prefix = document.createElement('span');
+            prefix.setAttribute('data-ffx-b4k-archive-prefix', '1');
+            prefix.setAttribute('aria-hidden', 'true');
+          }
+
+          prefix.textContent = ' / ';
+          vg.href = 'https://arch.b4k.dev/vg/';
+          vg.textContent = 'vg';
+          vg.title = 'Open the /vg/ archive on B4K';
+          vg.style.margin = '0';
+          vg.style.setProperty('color', 'rgb(129, 162, 190)', 'important');
+          vg.style.setProperty('text-decoration', 'none', 'important');
+
+          prefix.remove();
+          vg.remove();
+          vr.insertAdjacentElement('afterend', prefix);
+          prefix.insertAdjacentElement('afterend', vg);
+
+          for (const sibling of [prefix.previousSibling, vg.nextSibling]) {
+            if (sibling && sibling.nodeType === Node.TEXT_NODE && /^\s*$/.test(sibling.textContent || '')) sibling.remove();
+          }
+          return true;
+        }
+      }
+      return false;
+    };
+
+    let archiveObserver = null;
+    const tryAddArchiveLink = () => {
+      if (!onDesuarchive) return;
+      if (addToArchivesList() && archiveObserver) {
+        archiveObserver.disconnect();
+        archiveObserver = null;
+      }
+    };
+    if (onDesuarchive && !tryAddArchiveLink()) {
+      archiveObserver = new MutationObserver(tryAddArchiveLink);
+      archiveObserver.observe(document.documentElement, { childList: true, subtree: true });
+    }
+
+    // Direct post/thread URLs resolve too; board index pages remain on Desuarchive.
+    if (onDesuarchive) {
+      try {
+        const current = new URL(location.href);
+        const isVGPost = isVGPath(current.pathname) && /^\/vg\/(?:thread|post)\/\d+\/?$/i.test(current.pathname);
+        const isMoePost = !!archivedMoeBoardFromPath(current.pathname) && /^\/[a-z0-9]+\/(?:thread|post)\/\d+\/?$/i.test(current.pathname);
+        if (isVGPost || isMoePost) {
+          resolveArchiveTarget(current).then(target => {
+            if (target && target !== location.href) location.replace(target);
+          });
+        }
+      } catch (_) {}
+    }
+  }
+
+  function insertBBCode(textarea, open, close, selection) {
+    const value = textarea.value || '';
+    const focused = document.activeElement === textarea;
+    const start = focused ? textarea.selectionStart : (selection?.start ?? value.length);
+    const end = focused ? textarea.selectionEnd : (selection?.end ?? start);
+    const safeStart = Math.max(0, Math.min(start, value.length));
+    const safeEnd = Math.max(safeStart, Math.min(end, value.length));
+    const selected = value.slice(safeStart, safeEnd);
+    const replacement = open + selected + close;
+    const nextValue = value.slice(0, safeStart) + replacement + value.slice(safeEnd);
+
+    // Set through the native HTMLTextAreaElement setter so the real form
+    // control's value changes even on pages with wrapped/custom textarea code.
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+    if (setter) setter.call(textarea, nextValue);
+    else textarea.value = nextValue;
+
+    const cursorStart = selected ? safeStart : safeStart + open.length;
+    const cursorEnd = selected ? safeStart + replacement.length : cursorStart;
+    textarea.focus();
+    textarea.setSelectionRange(cursorStart, cursorEnd);
+    let event;
+    try { event = new InputEvent('input', { bubbles: true, inputType: 'insertText', data: replacement }); }
+    catch (_) { event = new Event('input', { bubbles: true }); }
+    textarea.dispatchEvent(event);
+    textarea.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  function findPostTextarea() {
+    const visible = [...document.querySelectorAll('textarea:not([disabled]):not([readonly])')]
+      .filter(el => el.getClientRects().length && el.offsetWidth > 0 && el.offsetHeight > 0);
+    if (!visible.length) return null;
+
+    // Prefer the textarea in a form that actually submits a post/reply. This
+    // is more reliable than matching a generic name such as "message" which
+    // can belong to search or unrelated page widgets.
+    const formCandidates = visible.map(el => {
+      const form = el.closest('form');
+      if (!form) return { el, score: -100 };
+      const controls = [...form.querySelectorAll('button, input[type="submit"], input[type="button"]')];
+      const submitText = controls.map(control => [
+        control.innerText, control.value, control.title,
+        control.getAttribute('aria-label'), control.name, control.id
+      ].filter(Boolean).join(' ')).join(' ').toLowerCase();
+      const formAttrs = `${form.id || ''} ${form.className || ''} ${form.getAttribute('action') || ''}`.toLowerCase();
+      const fieldAttrs = `${el.id || ''} ${el.name || ''} ${el.className || ''}`.toLowerCase();
+      let score = 0;
+      if (/(submit|send).{0,20}(post|reply)|post.{0,20}(reply|comment)|reply.{0,20}(post|submit)/.test(submitText)) score += 100;
+      if (/(post|reply|comment)/.test(formAttrs)) score += 50;
+      if (/(comment|post|message|body|reply)/.test(fieldAttrs)) score += 20;
+      if (form.querySelector('input[type="file"], .post_form, .post-form, #post_form')) score += 10;
+      if (el.closest('.search, #search, .navbar, header')) score -= 100;
+      return { el, score };
+    }).sort((a, b) => b.score - a.score);
+
+    if (formCandidates[0]?.score > 0) return formCandidates[0].el;
+
+    // FoolFuuka themes often use a plain textarea without useful ids/classes.
+    // In that case use the largest visible textarea outside search/navigation.
+    return visible.filter(el => !el.closest('.search, #search, .navbar, header'))
+      .sort((a, b) => (b.clientWidth * b.clientHeight) - (a.clientWidth * a.clientHeight))[0] || null;
+  }
+
+  function installBBCodeEditor() {
+    const textarea = findPostTextarea();
+    if (!textarea || textarea.dataset.ffxEditorAttached === "1") return;
+    const toolbar = document.createElement("div");
+    toolbar.className = "ffx-bbcode-toolbar";
+    toolbar.setAttribute("role", "toolbar");
+    toolbar.setAttribute("aria-label", "BBCode formatting");
+
+    let savedSelection = { start: textarea.selectionStart || 0, end: textarea.selectionEnd || 0 };
+    const rememberSelection = () => {
+      savedSelection = {
+        start: textarea.selectionStart ?? textarea.value.length,
+        end: textarea.selectionEnd ?? textarea.value.length
+      };
+    };
+    ["keyup", "mouseup", "select", "focus", "input", "pointerup"].forEach(type =>
+      textarea.addEventListener(type, rememberSelection)
+    );
+
+    const definitions = [
+      { label: 'B', open: '[b]', close: '[/b]', title: 'Bold', cls: 'ffx-bb-bold', html: '<strong>B</strong>' },
+      { label: 'I', open: '[i]', close: '[/i]', title: 'Italic', cls: 'ffx-bb-italic', html: '<em>I</em>' },
+      { label: 'U', open: '[u]', close: '[/u]', title: 'Underline', cls: 'ffx-bb-underline', html: '<u>U</u>' },
+      { label: 'S', open: '[s]', close: '[/s]', title: 'Strikethrough', cls: 'ffx-bb-strike', html: '<s>S</s>' },
+      { label: 'Spoiler', open: '[spoiler]', close: '[/spoiler]', title: 'Spoiler', cls: 'ffx-bb-spoiler', html: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>' },
+      { label: 'Code', open: '[code]', close: '[/code]', title: 'Code', cls: 'ffx-bb-code', html: '&lt;/&gt;' },
+      { label: 'Banned', open: '[banned]', close: '[/banned]', title: 'Banned text', cls: 'ffx-bb-banned', html: '<strong>Banned</strong>' }
+    ];
+    for (const definition of definitions) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = definition.cls;
+      button.innerHTML = definition.html;
+      button.title = definition.title;
+      button.setAttribute('aria-label', definition.title);
+      button.addEventListener('pointerdown', () => { rememberSelection(); });
+      button.addEventListener('mousedown', event => {
+        rememberSelection();
+        // Prevent focus moving from the actual post textarea to the toolbar.
+        event.preventDefault();
+      });
+      button.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        insertBBCode(textarea, definition.open, definition.close, savedSelection);
+        rememberSelection();
+      });
+      toolbar.appendChild(button);
+    }
+
+    textarea.insertAdjacentElement("beforebegin", toolbar);
+    textarea.dataset.ffxEditorAttached = "1";
+  }
+
+  function scan() {
+    if (scanning) return;
+    scanning = true;
+    scanQueued = false;
+    try {
+      installBBCodeEditor();
+      for (const post of postNodes()) {
+        if (post.hasAttribute(HIDDEN_MARKER)) { actuallyHide(post); continue; }
+        const parsed = parsePost(post);
+        if (!isGhost(post, parsed)) continue;
+        const key = keyFor(parsed);
+        if (hidden.has(key)) { hidePost(post, key, "manual"); continue; }
+        const keyword = matchedKeyword(post);
+        if (keyword) { hidePost(post, key, "keyword"); continue; }
+        const username = matchedUsername(post);
+        if (username) { hidePost(post, key, "username"); continue; }
+        addHideButton(post, key);
+        // Use precisely the post nodes on which Hide is successfully rendered.
+        // Ghost posts can appear inside ordinary board archives (for example /a/),
+        // so do not restrict the indicator to the /ghost/ board pathname.
+        addGhostBoardIcon(post);
+      }
+    } finally { scanning = false; }
+  }
+  function scheduleScan() {
+    if (scanQueued) return;
+    scanQueued = true;
+    requestAnimationFrame(scan);
+  }
+
+  async function init() {
+    installB4KBoardRouting();
+    await load();
+    scan();
+    new MutationObserver(mutations => {
+      const relevant = mutations.some(mutation => {
+        const changed = [...mutation.addedNodes, ...mutation.removedNodes];
+        return changed.some(node => {
+          if (!(node instanceof Element)) return true;
+          return !node.matches(".gf-hide-button, .gf-hidden-placeholder, .ffx-ghost-indicator, .ffx-bbcode-toolbar, .ffx-b4k-nav-link, #ghost-filter-styles") &&
+            !node.closest(".gf-hide-button, .gf-hidden-placeholder, .ffx-ghost-indicator, .ffx-bbcode-toolbar, .ffx-b4k-nav-link, #ghost-filter-styles");
+        });
+      });
+      if (relevant) scheduleScan();
+    }).observe(document.documentElement, { childList: true, subtree: true });
+
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== "local") return;
+      if (changes[STORAGE_KEY]) hidden = new Set(changes[STORAGE_KEY].newValue || []);
+      if (changes[KEYWORDS_KEY]) keywords = normalizeKeywords(changes[KEYWORDS_KEY].newValue);
+      if (changes[USERNAMES_KEY]) usernames = normalizeKeywords(changes[USERNAMES_KEY].newValue);
+      if (changes[STORAGE_KEY] || changes[KEYWORDS_KEY] || changes[USERNAMES_KEY]) scheduleScan();
+    });
+  }
+  init();
+})();

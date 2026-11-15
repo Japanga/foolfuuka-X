@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "FoolFuuka X",
+  "version": "0.6.30",
+  "description": "FoolFuuka X with parent-thread redirects and an expanded BBCode editor including underline formatting.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://desuarchive.org/*",
+    "https://*.desuarchive.org/*",
+    "https://arch.b4k.dev/*",
+    "https://boards.4chan.org/*",
+    "https://boards.4channel.org/*",
+    "https://archived.moe/*"
+  ],
+  "action": {
+    "default_title": "FoolFuuka X",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://desuarchive.org/*",
+        "https://*.desuarchive.org/*",
+        "https://arch.b4k.dev/*",
+        "https://boards.4chan.org/*",
+        "https://boards.4channel.org/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}
