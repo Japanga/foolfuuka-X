@@ -72,4 +72,82 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     })();
     return true;
   }
+
+  if (message?.type === 'FFX_FETCH_ARCHIVE_POST') {
+    const board = String(message.board || '').toLowerCase();
+    const postNumber = String(message.postNumber || '');
+    const sourceHost = String(message.sourceHost || '').toLowerCase();
+    if (!/^[a-z0-9]+$/.test(board) || !/^\d+$/.test(postNumber)) {
+      sendResponse({ post: null, error: 'Invalid board or post number' });
+      return;
+    }
+
+    // Prefer the archive named by the link itself, then use the known mirror
+    // order. This avoids asking the wrong archive first for externally hosted
+    // post links while retaining cross-archive fallback.
+    const archiveBases = {
+      'arch.b4k.dev': 'https://arch.b4k.dev',
+      'archived.moe': 'https://archived.moe',
+      'desuarchive.org': 'https://desuarchive.org'
+    };
+    const preferredBase = archiveBases[sourceHost] ||
+      (sourceHost.endsWith('.archived.moe') ? 'https://archived.moe' :
+       sourceHost.endsWith('.desuarchive.org') ? 'https://desuarchive.org' : null);
+    const fallbackBases = board === 'vg'
+      ? ['https://arch.b4k.dev']
+      : ['https://archived.moe', 'https://desuarchive.org'];
+    const apiBases = [...new Set([preferredBase, ...fallbackBases].filter(Boolean))];
+
+    // FoolFuuka's documented post endpoint normally returns the post object
+    // directly. Some mirrors/wrappers return it nested or keyed by post ID.
+    const extractPost = data => {
+      const candidates = [
+        data,
+        data?.post,
+        data?.data,
+        data?.data?.post,
+        data?.posts?.[postNumber],
+        data?.data?.posts?.[postNumber],
+        data?.[postNumber],
+        data?.result,
+        data?.result?.post
+      ];
+      for (const candidate of candidates) {
+        if (candidate && typeof candidate === 'object' &&
+            (candidate.num !== undefined || candidate.comment !== undefined ||
+             candidate.comment_processed !== undefined || candidate.name !== undefined)) {
+          return candidate;
+        }
+      }
+      return null;
+    };
+
+    (async () => {
+      const failures = [];
+      for (const base of apiBases) {
+        try {
+          const apiUrl = `${base}/_/api/chan/post/?board=${encodeURIComponent(board)}&num=${encodeURIComponent(postNumber)}`;
+          const response = await fetch(apiUrl, {
+            method: 'GET', credentials: 'omit', cache: 'no-store',
+            headers: { 'Accept': 'application/json' }
+          });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const data = await response.json();
+          const post = extractPost(data);
+          if (post) {
+            sendResponse({ post, source: base });
+            return;
+          }
+          failures.push(`${base}: response did not contain a recognizable post`);
+          console.warn(`[FoolFuuka X] ${base} returned an unrecognized post response for /${board}/${postNumber}:`, data);
+        } catch (error) {
+          failures.push(`${base}: ${error.message || error}`);
+          console.warn(`[FoolFuuka X] Archive preview lookup failed for /${board}/${postNumber} on ${base}:`, error);
+        }
+      }
+      sendResponse({ post: null, error: failures.join('; ') || 'Post not found in supported archives' });
+    })();
+    return true;
+  }
+
 });

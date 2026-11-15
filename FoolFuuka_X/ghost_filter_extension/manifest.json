@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "FoolFuuka X",
-  "version": "0.6.30",
-  "description": "FoolFuuka X with parent-thread redirects and an expanded BBCode editor including underline formatting.",
+  "version": "0.6.32",
+  "description": "FoolFuuka X with archive post routing, cross-archive hover previews, and an expanded BBCode editor including underline formatting.",
   "permissions": [
     "storage"
   ],
@@ -12,7 +12,8 @@
     "https://arch.b4k.dev/*",
     "https://boards.4chan.org/*",
     "https://boards.4channel.org/*",
-    "https://archived.moe/*"
+    "https://archived.moe/*",
+    "https://*.archived.moe/*"
   ],
   "action": {
     "default_title": "FoolFuuka X",
@@ -25,7 +26,9 @@
         "https://*.desuarchive.org/*",
         "https://arch.b4k.dev/*",
         "https://boards.4chan.org/*",
-        "https://boards.4channel.org/*"
+        "https://boards.4channel.org/*",
+        "https://archived.moe/*",
+        "https://*.archived.moe/*"
       ],
       "js": [
         "content.js"

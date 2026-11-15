@@ -649,6 +649,227 @@
     }
   }
 
+
+  function installArchivePostPreviews() {
+    const styleId = 'ffx-archive-preview-styles';
+    if (!document.getElementById(styleId)) {
+      const style = document.createElement('style');
+      style.id = styleId;
+      style.textContent = `
+        .ffx-archive-preview {
+          position: fixed; z-index: 2147483647; display: none;
+          width: min(560px, calc(100vw - 24px)); max-height: min(440px, calc(100vh - 24px));
+          overflow: auto; box-sizing: border-box; padding: 12px;
+          color: #ddd; background: #202126; border: 1px solid #555;
+          border-radius: 6px; box-shadow: 0 5px 22px rgba(0,0,0,.65);
+          font: 13px/1.45 Arial, sans-serif; text-align: left;
+          pointer-events: auto;
+        }
+        .ffx-archive-preview-head { display:flex; gap:8px; align-items:center; flex-wrap:wrap;
+          padding-bottom:7px; margin-bottom:8px; border-bottom:1px solid #444; color:#aaa; }
+        .ffx-archive-preview-head strong { color:#e6e6e6; }
+        .ffx-archive-preview-body { overflow-wrap:anywhere; }
+        .ffx-archive-preview-body img { max-width:150px; max-height:150px; object-fit:contain; float:left; margin:0 10px 7px 0; }
+        .ffx-archive-preview-body a { color:#8ab4d8; }
+        .ffx-archive-preview-body blockquote { margin:4px 0; padding-left:8px; border-left:3px solid #789; color:#9ab; }
+        .ffx-archive-preview-body pre { white-space:pre-wrap; }
+        .ffx-archive-preview-error { color:#aaa; font-style:italic; }
+      `;
+      document.documentElement.appendChild(style);
+    }
+
+    let popup = document.querySelector('.ffx-archive-preview');
+    if (!popup) {
+      popup = document.createElement('div');
+      popup.className = 'ffx-archive-preview';
+      popup.setAttribute('role', 'tooltip');
+      document.body.appendChild(popup);
+    }
+
+    let activeLink = null;
+    let hideTimer = null;
+    let requestToken = 0;
+    const cache = new Map();
+
+    const parseArchiveLink = link => {
+      let url;
+      try { url = new URL(link.href || link.getAttribute('href'), location.href); } catch (_) { return null; }
+      const parts = url.pathname.split('/').filter(Boolean);
+      if (parts.length < 2) return null;
+      const board = parts[0].toLowerCase();
+      if (!/^[a-z0-9]+$/.test(board)) return null;
+      const route = parts[1].toLowerCase();
+      if (route !== 'thread' && route !== 'post') return null;
+      const pathNumber = parts[2] || '';
+      if (!/^\d+$/.test(pathNumber)) return null;
+      const hash = url.hash.match(/(?:^|[#&])(?:q|p)?(\d+)/i);
+      const postNumber = hash ? hash[1] : pathNumber;
+      return { board, postNumber, host: url.hostname, href: url.href };
+    };
+
+    const cleanComment = html => {
+      const parsed = new DOMParser().parseFromString(`<div>${html || ''}</div>`, 'text/html');
+      const allowed = new Set(['A','B','I','U','S','STRONG','EM','BR','P','DIV','SPAN','BLOCKQUOTE','PRE','CODE','UL','OL','LI']);
+      const copySafe = node => {
+        if (node.nodeType === Node.TEXT_NODE) return document.createTextNode(node.nodeValue || '');
+        if (node.nodeType !== Node.ELEMENT_NODE) return document.createDocumentFragment();
+        if (!allowed.has(node.tagName)) {
+          const fragment = document.createDocumentFragment();
+          [...node.childNodes].forEach(child => fragment.appendChild(copySafe(child)));
+          return fragment;
+        }
+        const clean = document.createElement(node.tagName.toLowerCase());
+        if (node.tagName === 'A') {
+          const href = node.getAttribute('href') || '';
+          try {
+            const safe = new URL(href, location.href);
+            if (safe.protocol === 'http:' || safe.protocol === 'https:') {
+              clean.href = safe.href; clean.target = '_blank'; clean.rel = 'noopener noreferrer';
+            }
+          } catch (_) {}
+        }
+        [...node.childNodes].forEach(child => clean.appendChild(copySafe(child)));
+        return clean;
+      };
+      const output = document.createDocumentFragment();
+      [...parsed.body.firstElementChild.childNodes].forEach(child => output.appendChild(copySafe(child)));
+      return output;
+    };
+
+    const positionPopup = (link, event) => {
+      const margin = 12;
+      const rect = link.getBoundingClientRect();
+      const x = Math.min(Math.max(margin, event?.clientX ?? rect.left), window.innerWidth - 580);
+      const y = Math.min(Math.max(margin, rect.bottom + 8), window.innerHeight - 460);
+      popup.style.left = `${Math.max(margin, x)}px`;
+      popup.style.top = `${Math.max(margin, y)}px`;
+    };
+
+    const showLoading = (link, event) => {
+      positionPopup(link, event);
+      popup.replaceChildren();
+      const message = document.createElement('div');
+      message.className = 'ffx-archive-preview-error';
+      message.textContent = 'Loading archived post preview…';
+      popup.appendChild(message);
+      popup.style.display = 'block';
+    };
+
+    const renderPost = (post, target, link, event) => {
+      popup.replaceChildren();
+      const header = document.createElement('div');
+      header.className = 'ffx-archive-preview-head';
+      const title = document.createElement('strong');
+      title.textContent = `/${target.board}/ — No.${post.num || target.postNumber}`;
+      header.appendChild(title);
+      const author = document.createElement('span');
+      author.textContent = post.name_processed || post.name || 'Anonymous';
+      header.appendChild(author);
+      if (post.fourchan_date) {
+        const date = document.createElement('span');
+        date.textContent = post.fourchan_date;
+        header.appendChild(date);
+      }
+      const body = document.createElement('div');
+      body.className = 'ffx-archive-preview-body';
+      const media = post.media;
+      const thumb = media?.thumb_link || media?.media?.thumb_link;
+      if (thumb && String(media?.spoiler) !== '1') {
+        const image = document.createElement('img');
+        image.src = thumb; image.alt = media.media_filename || 'Archived attachment';
+        image.loading = 'lazy';
+        body.appendChild(image);
+      }
+      const comment = post.comment_processed || post.comment_sanitized || post.comment || '';
+      body.appendChild(cleanComment(comment));
+      if (!comment && post.deleted === '1') {
+        const deleted = document.createElement('span');
+        deleted.textContent = '[Post deleted]';
+        body.appendChild(deleted);
+      }
+      popup.append(header, body);
+      positionPopup(link, event);
+      popup.style.display = 'block';
+    };
+
+    const fetchPost = target => {
+      const key = `${target.host}|${target.board}|${target.postNumber}`;
+      if (cache.has(key)) return cache.get(key);
+      const promise = new Promise(resolve => {
+        try {
+          chrome.runtime.sendMessage({
+            type: 'FFX_FETCH_ARCHIVE_POST',
+            board: target.board,
+            postNumber: target.postNumber,
+            sourceHost: target.host
+          }, response => {
+            if (chrome.runtime.lastError || !response?.post) return resolve(null);
+            resolve(response.post);
+          });
+        } catch (_) { resolve(null); }
+      });
+      cache.set(key, promise);
+      return promise;
+    };
+
+    const beginPreview = async (link, event) => {
+      const target = parseArchiveLink(link);
+      if (!target) return;
+      clearTimeout(hideTimer);
+      activeLink = link;
+      const token = ++requestToken;
+      showLoading(link, event);
+      const post = await fetchPost(target);
+      if (token !== requestToken || activeLink !== link || !link.isConnected) return;
+      if (!post) {
+        popup.replaceChildren();
+        const error = document.createElement('div');
+        error.className = 'ffx-archive-preview-error';
+        error.textContent = 'Preview unavailable for this archived post.';
+        popup.appendChild(error);
+        return;
+      }
+      renderPost(post, target, link, event);
+    };
+
+    const scheduleHide = () => {
+      clearTimeout(hideTimer);
+      hideTimer = setTimeout(() => {
+        if (!popup.matches(':hover')) {
+          popup.style.display = 'none';
+          activeLink = null;
+          requestToken++;
+        }
+      }, 180);
+    };
+
+    document.addEventListener('pointerover', event => {
+      const link = event.target instanceof Element ? event.target.closest('a[href]') : null;
+      if (!link || link === activeLink || popup.contains(event.target)) return;
+      if (link.closest('.ffx-archive-preview')) return;
+      const target = parseArchiveLink(link);
+      if (!target) return;
+      beginPreview(link, event);
+    }, true);
+    document.addEventListener('pointerout', event => {
+      if (!activeLink) return;
+      const leavingLink = event.target instanceof Element && event.target.closest('a[href]') === activeLink;
+      if (leavingLink && (!event.relatedTarget || !activeLink.contains(event.relatedTarget))) scheduleHide();
+    }, true);
+    popup.addEventListener('pointerenter', () => clearTimeout(hideTimer));
+    popup.addEventListener('pointerleave', scheduleHide);
+    document.addEventListener('focusin', event => {
+      const link = event.target instanceof Element ? event.target.closest('a[href]') : null;
+      if (link) beginPreview(link, null);
+    }, true);
+    document.addEventListener('focusout', event => {
+      if (activeLink && event.target === activeLink) scheduleHide();
+    }, true);
+    window.addEventListener('scroll', () => {
+      if (activeLink && popup.style.display !== 'none') positionPopup(activeLink, null);
+    }, true);
+  }
+
   function insertBBCode(textarea, open, close, selection) {
     const value = textarea.value || '';
     const focused = document.activeElement === textarea;
@@ -798,6 +1019,7 @@
 
   async function init() {
     installB4KBoardRouting();
+    installArchivePostPreviews();
     await load();
     scan();
     new MutationObserver(mutations => {

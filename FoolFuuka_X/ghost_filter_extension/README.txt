@@ -1,6 +1,14 @@
-# FoolFuuka X — 0.6.26
+# FoolFuuka X — 0.6.31
 
 ## Changes
+- Adds hover/focus previews for individual posts linked from supported FoolFuuka archive URLs.
+- Uses the same archive post IDs carried by the existing /vg/ and Archived.Moe link-routing flow; /vg/ previews are fetched from arch.b4k.dev, while other supported boards try Archived.Moe and then Desuarchive.
+- Retrieves only the selected post through the FoolFuuka `/_/api/chan/post/` endpoint rather than downloading the entire thread.
+- Displays the board, post number, author, archive date, comment, and a non-spoiler thumbnail when available in a compact floating preview.
+- Sanitizes returned comment markup into a small safe formatting allowlist before displaying it.
+- Adds Archived.Moe pages to content-script coverage so links can also be previewed while browsing that archive directly.
+- Keeps normal click navigation, existing parent-thread resolution, and all current filtering/editor features intact.
+
 - Removes the BBCode Preview button and preview panel entirely. The formatting toolbar now contains only the BBCode formatting buttons.
 - Adds the SVG ghost indicator to every post node that qualifies for the existing Hide button, including ghost posts appearing inside ordinary board archives such as /a/. The icon is no longer restricted to pages whose pathname is /ghost/.
 - Places the icon immediately after the speech-bubble/reply control when detected. If that control cannot be identified, it uses the same post/header insertion point as the working Hide button and places the icon immediately after Hide.
@@ -43,3 +51,5 @@ Version 0.6.21: Restores the visible /board/ notation while keeping both slash c
 Version 0.6.26: Fixes Archived.Moe parent-thread resolution when the source link uses a bare numeric fragment such as #31423894. The resolver now recognizes #POST, #pPOST, and #qPOST fragments, queries the post API using that post ID even when the link path contains a misleading thread number, and builds the destination as /BOARD/thread/PARENT/#POST. This keeps the post ID separate from the parent thread ID and uses the plain numeric fragment format requested for Archived.Moe.
 
 0.6.30: Fixes path-only Archived.Moe reply links. When a Desuarchive link arrives as /BOARD/thread/POST_ID/ with no fragment, the extension now queries the Archived.Moe FoolFuuka post API using that path number. If the returned thread_num differs from the path number, it redirects to /BOARD/thread/PARENT/#POST_ID. Ordinary OP thread links remain unchanged when the API confirms that the post is its own thread OP.
+
+0.6.31: Experimental individual-post hover previews. Hover or keyboard-focus an archive post/thread link to load its exact post preview. Move the pointer into the preview to keep it open; moving away closes it. If an archive API cannot provide the post, the preview reports that it is unavailable.
