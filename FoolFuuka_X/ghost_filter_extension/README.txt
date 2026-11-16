@@ -66,3 +66,10 @@ Version 0.6.26: Fixes Archived.Moe parent-thread resolution when the source link
 
 
 0.6.36: Fixes Archived.Moe preview retrieval for its hosted boards. The API request now includes browser credentials, an Archived.Moe page referrer, and an XMLHttpRequest indicator to better match the working direct-browser request. Removes the invalid Desuarchive fallback for Archived.Moe-only boards (which produced HTTP 422), and passes the known parent thread number into the thread-preview fallback.
+
+
+Version 0.6.40: Adds a developer capcode to the exact !ANJxuQ9Xkk tripcode when it appears in FoolFuuka tripcode markup. The label is bold and RGB(15, 0, 240); matching plain text in a poster name is not modified.
+
+Version 0.6.42: Restricts the developer capcode feature to Desuarchive hostnames only. Archived.Moe capcode behavior is not changed; the capcode function exits immediately on all non-Desuarchive hosts.
+
+Version 0.6.44: Fixes Desuarchive developer capcode detection by removing the unreliable computed-font-weight rejection. The capcode is applied only to the exact semantic .postertrip element containing !ANJxuQ9Xkk; ordinary poster-name text remains untouched. The ## Developer suffix is a bold strong element in RGB(0, 0, 255).

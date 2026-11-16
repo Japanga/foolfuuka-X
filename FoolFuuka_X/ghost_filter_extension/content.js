@@ -33,6 +33,7 @@
       background: #3b3b3b; color: #bbb;
       cursor: pointer; font: 12px Arial, sans-serif;
     }
+    .ffx-developer-capcode { color: rgb(0, 0, 255) !important; font-weight: 700 !important; }
     .ffx-ghost-indicator { display:inline-flex !important; align-items:center !important; justify-content:center !important; width:18px !important; height:18px !important; margin:0 0 0 4px !important; vertical-align:middle !important; color:#d8d8d8 !important; line-height:1 !important; }
     .ffx-ghost-indicator svg { display:block !important; width:18px !important; height:18px !important; fill:#d8d8d8 !important; color:#d8d8d8 !important; }
     .ffx-bbcode-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:5px; margin:7px 0 5px; padding:7px; border:1px solid #555; border-radius:4px; background:#292929; }
@@ -1131,12 +1132,48 @@
     textarea.dataset.ffxEditorAttached = "1";
   }
 
+  // Apply the developer capcode to FoolFuuka's semantic tripcode elements.
+  // Scan the whole document rather than relying on postNodes(): search-result
+  // layouts can use a different wrapper structure from thread/post pages.
+  function applyDeveloperCapcode() {
+    const host = location.hostname.toLowerCase();
+    if (host !== 'desuarchive.org' && !host.endsWith('.desuarchive.org')) return;
+
+    // Desuarchive's FoolFuuka 2.2 markup uses .post_tripcode inside the
+    // actual <article class="post">. It does not use .postertrip.
+    // Exclude collapsed .post.stub entries and never inspect poster-name text.
+    const tripNodes = document.querySelectorAll('article.post:not(.stub) .post_tripcode');
+    for (const tripNode of tripNodes) {
+      if (!(tripNode instanceof HTMLElement)) continue;
+      // .post_tripcode is Desuarchive's semantic tripcode element. Do not use
+      // computed font-weight as a discriminator: site CSS can make a genuine
+      // tripcode bold too. Plain text in the poster-name field is not selected.
+      const tripText = (tripNode.textContent || '').replace(/[\u00a0\u200b\ufeff]/g, '').trim();
+      if (tripText !== '!ANJxuQ9Xkk') continue;
+
+      // Repair an interrupted/previous insertion without duplicating labels.
+      const existingLabel = tripNode.nextElementSibling;
+      if (existingLabel && existingLabel.classList.contains('ffx-developer-capcode')) {
+        tripNode.dataset.ffxDeveloperCapcodeApplied = '1';
+        continue;
+      }
+
+      const label = document.createElement('strong');
+      label.className = 'ffx-developer-capcode';
+      label.textContent = ' ## Developer';
+      label.setAttribute('aria-label', 'Developer capcode');
+      tripNode.insertAdjacentElement('afterend', label);
+      tripNode.dataset.ffxDeveloperCapcodeApplied = '1';
+    }
+  }
+
   function scan() {
     if (scanning) return;
     scanning = true;
     scanQueued = false;
     try {
       installBBCodeEditor();
+      applyDeveloperCapcode();
       for (const post of postNodes()) {
         if (post.hasAttribute(HIDDEN_MARKER)) { actuallyHide(post); continue; }
         const parsed = parsePost(post);
@@ -1171,8 +1208,8 @@
         const changed = [...mutation.addedNodes, ...mutation.removedNodes];
         return changed.some(node => {
           if (!(node instanceof Element)) return true;
-          return !node.matches(".gf-hide-button, .gf-hidden-placeholder, .ffx-ghost-indicator, .ffx-bbcode-toolbar, .ffx-b4k-nav-link, #ghost-filter-styles") &&
-            !node.closest(".gf-hide-button, .gf-hidden-placeholder, .ffx-ghost-indicator, .ffx-bbcode-toolbar, .ffx-b4k-nav-link, #ghost-filter-styles");
+          return !node.matches(".gf-hide-button, .gf-hidden-placeholder, .ffx-ghost-indicator, .ffx-developer-capcode, .ffx-bbcode-toolbar, .ffx-b4k-nav-link, #ghost-filter-styles") &&
+            !node.closest(".gf-hide-button, .gf-hidden-placeholder, .ffx-ghost-indicator, .ffx-developer-capcode, .ffx-bbcode-toolbar, .ffx-b4k-nav-link, #ghost-filter-styles");
         });
       });
       if (relevant) scheduleScan();
