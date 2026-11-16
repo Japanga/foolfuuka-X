@@ -85,3 +85,5 @@ Version 0.6.47 - Protocol-less Desuarchive Catbox links
 
 
 Version 0.6.47: When Catbox instant embedding is enabled, the original link is hidden while the media is displayed. Embedded media is constrained to a maximum of 640px wide and 480px high; hover previews are constrained to the viewport. Turning embedding off restores the original links.
+
+0.6.56: Fixes thread-gallery hover text extraction by prioritizing FoolFuuka post bodies using the `.text` element, with the existing post-body selectors retained as fallbacks.

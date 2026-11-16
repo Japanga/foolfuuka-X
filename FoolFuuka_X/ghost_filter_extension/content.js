@@ -52,6 +52,224 @@
     } catch (_) {}
   }
 
+
+  // Floating image gallery: individual Desuarchive thread pages only.
+  function initThreadGallery() {
+    if (!isDesuarchive || !/^\/[a-z0-9]+\/thread\/\d+\/?$/i.test(location.pathname)) return;
+    if (document.getElementById("ffx-thread-gallery")) return;
+
+    const posts = [...document.querySelectorAll("article.post:not(.stub), .post:not(.stub)")];
+    const items = [];
+    const seen = new Set();
+
+    for (const post of posts) {
+      // FoolFuuka exposes the original file through `.thread_image_link`.
+      // Only accept direct media-host URLs here: broad `a[href]` matching can
+      // accidentally capture a reverse-image-search/redirect link instead.
+      const candidates = [...post.querySelectorAll(
+        "a.thread_image_link[href], a.fileThumb[href], a.post_image[href]"
+      )];
+      const isImageFile = url => /\.(?:jpe?g|png|gif|webp|avif|bmp)(?:[?#].*)?$/i.test(url);
+      const directMediaLink = candidates.find(a => {
+        try {
+          const u = new URL(a.href, location.href);
+          return u.hostname === "desu-usergeneratedcontent.xyz" && isImageFile(u.href) && !seen.has(u.href);
+        } catch (_) { return false; }
+      });
+      const thumb = directMediaLink?.querySelector("img") ||
+        post.querySelector("a.thread_image_link img, a.fileThumb img, .post_image img, img");
+
+      // Some layouts expose only the thumbnail URL. Convert its archive path
+      // to the corresponding full-resolution `/image/` path on the media host.
+      let fullResUrl = directMediaLink?.href || "";
+      if (!fullResUrl && thumb) {
+        try {
+          const u = new URL(thumb.currentSrc || thumb.src, location.href);
+          if (u.hostname === "desu-usergeneratedcontent.xyz" && /\/thumb\//i.test(u.pathname)) {
+            u.pathname = u.pathname.replace(/\/thumb\//i, "/image/").replace(/s(?=\.[^.]+$)/i, "");
+            fullResUrl = u.href;
+          }
+        } catch (_) {}
+      }
+      if (!fullResUrl || !isImageFile(fullResUrl) || seen.has(fullResUrl)) continue;
+      seen.add(fullResUrl);
+      const idNode = post.querySelector(
+        ".post_number, .post_num, .post_no, .post_id, [id^='p'], a[href*='#p']"
+      );
+      const dateNode = post.querySelector(
+        "time[datetime], time, .post_date, .post_time, .post_timestamp, .timestamp"
+      );
+      // FoolFuuka's rendered post body is commonly exposed as `.text`.
+      // Prefer that exact content node: the broader legacy selectors can
+      // resolve to an outer wrapper (or miss the body entirely) on some
+      // Desuarchive thread layouts.
+      const textNode = post.querySelector(".text");
+      const legacyBodyNode = post.querySelector(
+        ".post_message, .post_body, .post_content, blockquote, .post_comment, .post_text"
+      );
+      const bodyNode = textNode && (textNode.innerText || textNode.textContent || "").trim()
+        ? textNode : legacyBodyNode;
+      const postId = (idNode?.textContent || post.id || "").trim();
+      const date = (dateNode?.getAttribute("datetime") || dateNode?.title ||
+        dateNode?.textContent || "").trim();
+      const postText = (bodyNode?.innerText || bodyNode?.textContent || "")
+        .trim().replace(/\s+/g, " ");
+
+      items.push({
+        href: fullResUrl,
+        thumb: thumb ? (thumb.currentSrc || thumb.src) : fullResUrl,
+        postId, date, postText
+      });
+    }
+
+    if (!items.length) return;
+
+    const panel = document.createElement("section");
+    panel.id = "ffx-thread-gallery";
+    panel.setAttribute("aria-label", "Thread image gallery");
+    Object.assign(panel.style, {
+      position: "fixed", right: "16px", bottom: "16px", zIndex: "2147483000",
+      width: "min(330px, calc(100vw - 24px))", maxHeight: "min(38vh, 290px)",
+      display: "flex", flexDirection: "column", color: "#fff",
+      background: "rgba(0,0,0,.80)", border: "1px solid rgba(255,255,255,.22)",
+      borderRadius: "9px", boxShadow: "0 5px 22px rgba(0,0,0,.48)",
+      backdropFilter: "blur(7px)", overflow: "hidden",
+      font: "12px/1.4 Arial,sans-serif"
+    });
+
+    const header = document.createElement("div");
+    Object.assign(header.style, {
+      display: "flex", alignItems: "center", justifyContent: "space-between",
+      padding: "7px 9px", cursor: "move", userSelect: "none",
+      background: "rgba(255,255,255,.10)", fontWeight: "700", flex: "0 0 auto"
+    });
+    const heading = document.createElement("span");
+    heading.textContent = `Thread gallery · ${items.length} images`;
+    const close = document.createElement("button");
+    close.type = "button";
+    close.textContent = "×";
+    close.title = "Close gallery";
+    Object.assign(close.style, {
+      border: "0", background: "transparent", color: "#fff",
+      fontSize: "20px", lineHeight: "18px", cursor: "pointer", padding: "0 2px"
+    });
+    close.addEventListener("click", () => {
+      panel.remove();
+      document.getElementById("ffx-gallery-tooltip")?.remove();
+    });
+    header.append(heading, close);
+
+    // A fixed-size tile grid prevents thumbnail overlap and scrolls for long threads.
+    const grid = document.createElement("div");
+    Object.assign(grid.style, {
+      display: "grid", gridTemplateColumns: "repeat(5, 52px)",
+      gridAutoRows: "52px", justifyContent: "start", alignContent: "start",
+      gap: "7px", padding: "9px", overflowY: "auto", overflowX: "hidden",
+      flex: "1 1 auto", minHeight: "0", boxSizing: "border-box"
+    });
+
+    const tooltip = document.createElement("div");
+    tooltip.id = "ffx-gallery-tooltip";
+    Object.assign(tooltip.style, {
+      position: "fixed", display: "none", zIndex: "2147483647",
+      width: "min(320px, calc(100vw - 24px))", maxHeight: "min(220px, 40vh)",
+      overflow: "auto", boxSizing: "border-box", padding: "10px 12px",
+      borderRadius: "7px", color: "#fff", background: "rgba(12,12,12,.97)",
+      border: "1px solid rgba(255,255,255,.28)",
+      boxShadow: "0 5px 18px rgba(0,0,0,.65)", pointerEvents: "none",
+      whiteSpace: "normal", overflowWrap: "anywhere",
+      font: "12px/1.45 Arial,sans-serif"
+    });
+
+    const hideTooltip = () => { tooltip.style.display = "none"; };
+    items.forEach((item, index) => {
+      const tile = document.createElement("a");
+      tile.href = item.href;
+      tile.target = "_blank";
+      tile.rel = "noopener noreferrer";
+      tile.title = `Open image ${index + 1}`;
+      Object.assign(tile.style, {
+        display: "block", width: "52px", height: "52px",
+        boxSizing: "border-box", overflow: "hidden", borderRadius: "5px",
+        background: "rgba(255,255,255,.10)",
+        border: "1px solid rgba(255,255,255,.22)"
+      });
+      const image = document.createElement("img");
+      image.src = item.thumb;
+      image.alt = `Post ${item.postId || index + 1}`;
+      image.loading = "lazy";
+      image.decoding = "async";
+      Object.assign(image.style, {
+        display: "block", width: "100%", height: "100%", objectFit: "cover"
+      });
+      tile.appendChild(image);
+
+      tile.addEventListener("mouseenter", () => {
+        tooltip.replaceChildren();
+        const title = document.createElement("div");
+        title.textContent = item.postId ? `Post ${item.postId}` : `Image ${index + 1}`;
+        title.style.cssText = "font-weight:bold;margin-bottom:4px;color:#fff";
+        tooltip.appendChild(title);
+        if (item.date) {
+          const date = document.createElement("div");
+          date.textContent = item.date;
+          date.style.cssText = "color:#bbb;margin-bottom:6px";
+          tooltip.appendChild(date);
+        }
+        const text = document.createElement("div");
+        text.textContent = item.postText || "(No post text found)";
+        text.style.cssText = "color:#eee;white-space:pre-wrap";
+        tooltip.appendChild(text);
+        tooltip.style.display = "block";
+        const r = tile.getBoundingClientRect();
+        const tw = Math.min(320, window.innerWidth - 24);
+        let left = r.left + r.width / 2 - tw / 2;
+        left = Math.max(12, Math.min(window.innerWidth - tw - 12, left));
+        const estimatedHeight = Math.min(220, tooltip.scrollHeight || 100);
+        let top = r.top - estimatedHeight - 10;
+        if (top < 10) top = Math.min(window.innerHeight - estimatedHeight - 10, r.bottom + 10);
+        tooltip.style.left = `${left}px`;
+        tooltip.style.top = `${Math.max(10, top)}px`;
+      });
+      tile.addEventListener("mouseleave", hideTooltip);
+      grid.appendChild(tile);
+    });
+
+    panel.append(header, grid);
+    document.body.appendChild(panel);
+    document.body.appendChild(tooltip);
+
+    // Drag the panel by its header; constrain it to the visible viewport.
+    let drag = null;
+    header.addEventListener("pointerdown", event => {
+      if (event.target === close) return;
+      const rect = panel.getBoundingClientRect();
+      drag = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+      panel.style.left = `${rect.left}px`;
+      panel.style.top = `${rect.top}px`;
+      panel.style.right = "auto";
+      panel.style.bottom = "auto";
+      header.setPointerCapture(event.pointerId);
+    });
+    header.addEventListener("pointermove", event => {
+      if (!drag) return;
+      const x = Math.max(0, Math.min(window.innerWidth - panel.offsetWidth, event.clientX - drag.x));
+      const y = Math.max(0, Math.min(window.innerHeight - panel.offsetHeight, event.clientY - drag.y));
+      panel.style.left = `${x}px`;
+      panel.style.top = `${y}px`;
+    });
+    const stopDrag = () => { drag = null; };
+    header.addEventListener("pointerup", stopDrag);
+    header.addEventListener("pointercancel", stopDrag);
+  }
+
+  const startGallery = () => { if (document.body) initThreadGallery(); };
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", startGallery, { once: true });
+  } else {
+    startGallery();
+  }
+
   const STORAGE_KEY = "ghostFilterHiddenPosts";
   const KEYWORDS_KEY = "ghostFilterKeywords";
   const USERNAMES_KEY = "ghostFilterUsernames";
