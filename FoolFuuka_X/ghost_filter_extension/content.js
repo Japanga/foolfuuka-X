@@ -1,6 +1,57 @@
 (() => {
   "use strict";
 
+  // FoolFuuka X must not run any archive/board integrations on 4chan.
+  // Keep only this small notice active there, then exit before installing
+  // styles, observers, navigation handlers, or post-processing features.
+  const currentHost = location.hostname.toLowerCase();
+  const isFourChan = currentHost === "4chan.org" || currentHost.endsWith(".4chan.org") ||
+    currentHost === "4channel.org" || currentHost.endsWith(".4channel.org");
+  const isDesuarchive = currentHost === "desuarchive.org" || currentHost.endsWith(".desuarchive.org");
+
+  function showFfxSiteNotice(message, kind) {
+    const show = () => {
+      if (!document.body || document.getElementById("ffx-site-status-notice")) return;
+      const notice = document.createElement("div");
+      notice.id = "ffx-site-status-notice";
+      notice.textContent = message;
+      Object.assign(notice.style, {
+        position: "fixed", top: "12px", right: "12px", zIndex: "2147483647",
+        maxWidth: "min(440px, calc(100vw - 32px))", boxSizing: "border-box",
+        padding: "11px 15px", borderRadius: "5px",
+        border: kind === "warning" ? "1px solid #b94a48" : "1px solid #248b48",
+        background: kind === "warning" ? "#7f2424" : "#176b35",
+        color: "#fff", font: "bold 13px/1.4 Arial, sans-serif",
+        boxShadow: "0 3px 14px #0008", opacity: "1",
+        transition: "opacity .35s ease"
+      });
+      document.body.appendChild(notice);
+      window.setTimeout(() => {
+        notice.style.opacity = "0";
+        window.setTimeout(() => notice.remove(), 400);
+      }, 5000);
+    };
+    if (document.body) show();
+    else document.addEventListener("DOMContentLoaded", show, { once: true });
+  }
+
+  if (isFourChan) {
+    showFfxSiteNotice("FoolFuuka X has been temporarily disabled because you are browsing 4chan.org. All extension features are suspended on 4chan.", "warning");
+    try { chrome.storage.local.set({ ffxSuspendedOnFourChan: true }); } catch (_) {}
+    return;
+  }
+
+  if (isDesuarchive) {
+    try {
+      chrome.storage.local.get({ ffxSuspendedOnFourChan: false }, data => {
+        if (data.ffxSuspendedOnFourChan) {
+          showFfxSiteNotice("FoolFuuka X has been re-enabled on Desuarchive.", "success");
+          chrome.storage.local.set({ ffxSuspendedOnFourChan: false });
+        }
+      });
+    } catch (_) {}
+  }
+
   const STORAGE_KEY = "ghostFilterHiddenPosts";
   const KEYWORDS_KEY = "ghostFilterKeywords";
   const USERNAMES_KEY = "ghostFilterUsernames";

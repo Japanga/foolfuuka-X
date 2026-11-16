@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "FoolFuuka X",
-  "version": "0.6.51",
+  "version": "0.6.52",
   "description": "FoolFuuka X with archive previews, persistent image caching, and Desuarchive Catbox link previews and optional embedding, plus developer tripcode capcode.",
   "permissions": [
     "storage"
@@ -35,7 +35,11 @@
         "https://boards.4chan.org/*",
         "https://boards.4channel.org/*",
         "https://archived.moe/*",
-        "https://*.archived.moe/*"
+        "https://*.archived.moe/*",
+        "https://4chan.org/*",
+        "https://*.4chan.org/*",
+        "https://4channel.org/*",
+        "https://*.4channel.org/*"
       ],
       "js": [
         "content.js"
