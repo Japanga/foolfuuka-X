@@ -73,3 +73,15 @@ Version 0.6.40: Adds a developer capcode to the exact !ANJxuQ9Xkk tripcode when 
 Version 0.6.42: Restricts the developer capcode feature to Desuarchive hostnames only. Archived.Moe capcode behavior is not changed; the capcode function exits immediately on all non-Desuarchive hosts.
 
 Version 0.6.44: Fixes Desuarchive developer capcode detection by removing the unreliable computed-font-weight rejection. The capcode is applied only to the exact semantic .postertrip element containing !ANJxuQ9Xkk; ordinary poster-name text remains untouched. The ## Developer suffix is a bold strong element in RGB(0, 0, 255).
+
+
+Version 0.6.47 - Protocol-less Desuarchive Catbox links
+- Makes direct files.catbox.moe image/video URLs clickable in post text.
+- Hover previews images and MP4/WebM/OGV videos.
+- Optional instant embedding is controlled by an unchecked-by-default checkbox in the extension popup.
+- Catbox processing is scoped to Desuarchive and does not alter Archived.Moe behavior.
+
+- Also linkifies shortened/protocol-less forms such as files.catbox.moe/abc123.mp4, normalizing destinations to HTTPS.
+
+
+Version 0.6.47: When Catbox instant embedding is enabled, the original link is hidden while the media is displayed. Embedded media is constrained to a maximum of 640px wide and 480px high; hover previews are constrained to the viewport. Turning embedding off restores the original links.

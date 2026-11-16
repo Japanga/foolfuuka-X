@@ -4,6 +4,7 @@
   const STORAGE_KEY = "ghostFilterHiddenPosts";
   const KEYWORDS_KEY = "ghostFilterKeywords";
   const USERNAMES_KEY = "ghostFilterUsernames";
+  const CATBOX_EMBED_KEY = "ffxCatboxInstantEmbed";
   const GHOST_ICON_MARKER = "data-ffx-ghost-icon";
   const HIDDEN_MARKER = "data-ghost-filter-key";
   const BUTTON_MARKER = "data-gf-hide-button-added";
@@ -15,6 +16,7 @@
   let hidden = new Set();
   let keywords = [];
   let usernames = [];
+  let catboxInstantEmbed = false;
   let scanQueued = false;
   let scanning = false;
 
@@ -34,6 +36,14 @@
       cursor: pointer; font: 12px Arial, sans-serif;
     }
     .ffx-developer-capcode { color: rgb(0, 0, 255) !important; font-weight: 700 !important; }
+    .ffx-catbox-link { cursor: pointer !important; }
+    /* When media is embedded, keep the anchor in the DOM for state/URL tracking but hide its visible text. */
+    .ffx-catbox-link[data-ffx-catbox-embedded="1"] { display:none !important; }
+    .ffx-catbox-embed { display:block !important; width:fit-content; max-width:100%; margin:8px 0; overflow:hidden; }
+    .ffx-catbox-embed img, .ffx-catbox-embed video { display:block !important; width:auto !important; height:auto !important; max-width:min(100%, 640px) !important; max-height:480px !important; object-fit:contain !important; }
+    .ffx-catbox-hover { position:fixed; z-index:2147483647; max-width:min(70vw, 560px); max-height:65vh; padding:6px; border:1px solid #777; border-radius:4px; background:#202020; box-shadow:0 4px 18px #000b; pointer-events:none; overflow:hidden; }
+    .ffx-catbox-hover img, .ffx-catbox-hover video { display:block; width:auto; height:auto; max-width:min(68vw, 548px); max-height:60vh; object-fit:contain; }
+
     .ffx-ghost-indicator { display:inline-flex !important; align-items:center !important; justify-content:center !important; width:18px !important; height:18px !important; margin:0 0 0 4px !important; vertical-align:middle !important; color:#d8d8d8 !important; line-height:1 !important; }
     .ffx-ghost-indicator svg { display:block !important; width:18px !important; height:18px !important; fill:#d8d8d8 !important; color:#d8d8d8 !important; }
     .ffx-bbcode-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:5px; margin:7px 0 5px; padding:7px; border:1px solid #555; border-radius:4px; background:#292929; }
@@ -72,10 +82,11 @@
     return new Promise(resolve => chrome.storage.local.set(values, resolve));
   }
   async function load() {
-    const data = await storageGet({ [STORAGE_KEY]: [], [KEYWORDS_KEY]: [], [USERNAMES_KEY]: [] });
+    const data = await storageGet({ [STORAGE_KEY]: [], [KEYWORDS_KEY]: [], [USERNAMES_KEY]: [], [CATBOX_EMBED_KEY]: false });
     hidden = new Set(Array.isArray(data[STORAGE_KEY]) ? data[STORAGE_KEY] : []);
     keywords = normalizeKeywords(data[KEYWORDS_KEY]);
     usernames = normalizeKeywords(data[USERNAMES_KEY]);
+    catboxInstantEmbed = data[CATBOX_EMBED_KEY] === true;
   }
   function normalizeKeywords(value) {
     const list = Array.isArray(value) ? value : [];
@@ -1167,6 +1178,103 @@
     }
   }
 
+  // Catbox support is intentionally scoped to Desuarchive; other archive hosts are untouched.
+  function catboxMediaUrl(raw) {
+    try {
+      let candidate = String(raw || "").trim();
+      // Desuarchive posts commonly omit the URL scheme (files.catbox.moe/id.ext).
+      if (/^files\.catbox\.moe\//i.test(candidate)) candidate = "https://" + candidate;
+      else if (/^\/\/files\.catbox\.moe\//i.test(candidate)) candidate = "https:" + candidate;
+      const url = new URL(candidate, location.href);
+      if ((url.protocol !== "https:" && url.protocol !== "http:") || url.hostname.toLowerCase() !== "files.catbox.moe") return null;
+      if (!/\.(?:png|jpe?g|gif|webp|avif|bmp|mp4|webm|ogv)$/i.test(url.pathname)) return null;
+      // Always open Catbox media over HTTPS, regardless of the shorthand used in the post.
+      url.protocol = "https:";
+      return url.href;
+    } catch (_) { return null; }
+  }
+  function makeCatboxMedia(url, className) {
+    const video = /\.(?:mp4|webm|ogv)$/i.test(new URL(url).pathname);
+    const media = document.createElement(video ? "video" : "img");
+    media.className = className;
+    if (video) {
+      media.src = url; media.controls = true; media.preload = "metadata";
+      media.playsInline = true;
+    } else {
+      media.src = url; media.alt = "Catbox image preview"; media.loading = "lazy";
+    }
+    return media;
+  }
+  function embedCatboxLink(link, url) {
+    if (!catboxInstantEmbed || link.dataset.ffxCatboxEmbedded === "1") return;
+    const wrap = document.createElement("span");
+    wrap.className = "ffx-catbox-embed";
+    wrap.appendChild(makeCatboxMedia(url, "ffx-catbox-media"));
+    link.insertAdjacentElement("afterend", wrap);
+    link.dataset.ffxCatboxEmbedded = "1";
+  }
+  function processCatboxLinks() {
+    if (location.hostname !== "desuarchive.org" && !location.hostname.endsWith(".desuarchive.org")) return;
+    const posts = document.querySelectorAll("article.post:not(.stub) .text");
+    for (const postText of posts) {
+      // Existing anchors, including links rendered by FoolFuuka.
+      for (const link of postText.querySelectorAll("a[href]")) {
+        const url = catboxMediaUrl(link.href);
+        if (!url) continue;
+        link.classList.add("ffx-catbox-link");
+        link.dataset.ffxCatboxUrl = url;
+        embedCatboxLink(link, url);
+      }
+      // Linkify bare URLs in text nodes without disturbing markup or quoted text.
+      const walker = document.createTreeWalker(postText, NodeFilter.SHOW_TEXT, {
+        acceptNode(node) {
+          if (!node.nodeValue || !/files\.catbox\.moe\//i.test(node.nodeValue)) return NodeFilter.FILTER_REJECT;
+          if (node.parentElement?.closest("a, code, pre, script, style, .ffx-catbox-embed")) return NodeFilter.FILTER_REJECT;
+          return NodeFilter.FILTER_ACCEPT;
+        }
+      });
+      const nodes=[]; while (walker.nextNode()) nodes.push(walker.currentNode);
+      for (const node of nodes) {
+        const text=node.nodeValue;
+        const re=/(?:https?:\/\/)?files\.catbox\.moe\/[A-Za-z0-9_-]+\.(?:png|jpe?g|gif|webp|avif|bmp|mp4|webm|ogv)(?:\?[A-Za-z0-9_%=&+-]*)?(?:#[A-Za-z0-9_.-]*)?/ig;
+        let match, last=0; const frag=document.createDocumentFragment(); let changed=false;
+        while ((match=re.exec(text))) {
+          // Avoid matching the domain as part of a larger word or email-like token.
+          if (match.index > 0 && !/[\s([{<"'=]/.test(text[match.index-1])) continue;
+          let end=match.index+match[0].length;
+          while (end>match.index && /[),.!?;:]$/.test(text.slice(match.index,end))) end--;
+          if (end<=match.index) continue;
+          const raw=text.slice(match.index,end);
+          const url=catboxMediaUrl(raw); if (!url) continue;
+          frag.appendChild(document.createTextNode(text.slice(last,match.index)));
+          const a=document.createElement("a"); a.href=url; a.textContent=raw;
+          a.target="_blank"; a.rel="noopener noreferrer"; a.className="ffx-catbox-link"; a.dataset.ffxCatboxUrl=url;
+          frag.appendChild(a); last=end; re.lastIndex=end; changed=true;
+        }
+        if (changed) { frag.appendChild(document.createTextNode(text.slice(last))); node.replaceWith(frag); }
+      }
+    }
+  }
+  let catboxHover=null, catboxHoverOwner=null;
+  function hideCatboxHover() { if (catboxHover) catboxHover.remove(); catboxHover=null; catboxHoverOwner=null; }
+  document.addEventListener("pointerover", event => {
+    const link=event.target.closest?.("a.ffx-catbox-link");
+    if (!link || link===catboxHoverOwner || !link.dataset.ffxCatboxUrl) return;
+    hideCatboxHover();
+    const popup=document.createElement("div"); popup.className="ffx-catbox-hover";
+    const media=makeCatboxMedia(link.dataset.ffxCatboxUrl,"ffx-catbox-preview");
+    if (media.tagName === "VIDEO") { media.muted=true; media.autoplay=true; media.loop=true; media.controls=false; }
+    popup.appendChild(media); document.body.appendChild(popup);
+    const rect=link.getBoundingClientRect();
+    popup.style.left=Math.max(8,Math.min(window.innerWidth-popup.offsetWidth-8,rect.left)) + "px";
+    popup.style.top=Math.max(8,Math.min(window.innerHeight-popup.offsetHeight-8,rect.bottom+6)) + "px";
+    catboxHover=popup; catboxHoverOwner=link;
+  });
+  document.addEventListener("pointerout", event => {
+    const link=event.target.closest?.("a.ffx-catbox-link");
+    if (link && !link.contains(event.relatedTarget)) hideCatboxHover();
+  });
+
   function scan() {
     if (scanning) return;
     scanning = true;
@@ -1174,6 +1282,7 @@
     try {
       installBBCodeEditor();
       applyDeveloperCapcode();
+      processCatboxLinks();
       for (const post of postNodes()) {
         if (post.hasAttribute(HIDDEN_MARKER)) { actuallyHide(post); continue; }
         const parsed = parsePost(post);
@@ -1220,6 +1329,7 @@
       if (changes[STORAGE_KEY]) hidden = new Set(changes[STORAGE_KEY].newValue || []);
       if (changes[KEYWORDS_KEY]) keywords = normalizeKeywords(changes[KEYWORDS_KEY].newValue);
       if (changes[USERNAMES_KEY]) usernames = normalizeKeywords(changes[USERNAMES_KEY].newValue);
+      if (changes[CATBOX_EMBED_KEY]) { catboxInstantEmbed = changes[CATBOX_EMBED_KEY].newValue === true; document.querySelectorAll(".ffx-catbox-embed").forEach(el=>el.remove()); document.querySelectorAll("a.ffx-catbox-link").forEach(a=>{delete a.dataset.ffxCatboxEmbedded; if(catboxInstantEmbed) embedCatboxLink(a,a.dataset.ffxCatboxUrl);}); }
       if (changes[STORAGE_KEY] || changes[KEYWORDS_KEY] || changes[USERNAMES_KEY]) scheduleScan();
     });
   }
