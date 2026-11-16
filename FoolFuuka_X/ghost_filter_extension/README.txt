@@ -1,6 +1,8 @@
-# FoolFuuka X — 0.6.31
+# FoolFuuka X — 0.6.38
 
 ## Changes
+- 0.6.38: Fixes media URL selection by ignoring filename-only fields such as `media_orig` and `preview_orig`, prioritizing actual thumbnail/original URL fields including `thumb_link`, `media_link`, and `remote_media_link`. Uses eager image loading in hover previews and clears the successful-post cache after both image URLs fail so the next hover performs a fresh API lookup.
+- 0.6.37: Improves Archived.Moe hover-preview attachment recovery by searching nested and post-level FoolFuuka media fields, resolving relative media URLs against the supplying archive, falling back from thumbnails to original attachments, and providing a direct attachment link if image rendering fails.
 - Adds hover/focus previews for individual posts linked from supported FoolFuuka archive URLs.
 - Uses the same archive post IDs carried by the existing /vg/ and Archived.Moe link-routing flow; /vg/ previews are fetched from arch.b4k.dev, while other supported boards try Archived.Moe and then Desuarchive.
 - Retrieves only the selected post through the FoolFuuka `/_/api/chan/post/` endpoint rather than downloading the entire thread.
@@ -53,3 +55,14 @@ Version 0.6.26: Fixes Archived.Moe parent-thread resolution when the source link
 0.6.30: Fixes path-only Archived.Moe reply links. When a Desuarchive link arrives as /BOARD/thread/POST_ID/ with no fragment, the extension now queries the Archived.Moe FoolFuuka post API using that path number. If the returned thread_num differs from the path number, it redirects to /BOARD/thread/PARENT/#POST_ID. Ordinary OP thread links remain unchanged when the API confirms that the post is its own thread OP.
 
 0.6.31: Experimental individual-post hover previews. Hover or keyboard-focus an archive post/thread link to load its exact post preview. Move the pointer into the preview to keep it open; moving away closes it. If an archive API cannot provide the post, the preview reports that it is unavailable.
+
+0.6.33: Prevents custom hover previews from attaching to native Desuarchive links. The extension now adds its custom preview only to archived.moe (including subdomains) and arch.b4k.dev links, leaving Desuarchive's existing post-hover previews untouched and avoiding duplicate hover cards.
+
+
+0.6.34: Fixes custom hover previews for Desuarchive links that are routed to Archived.Moe. The preview parser now recognizes the same Archived.Moe-only board set as the redirect handler, including canonical 4chan quote links on Desuarchive pages. These previews query Archived.Moe directly instead of incorrectly preferring the original link host. Native Desuarchive previews remain untouched for boards hosted there. Failed preview requests are no longer cached permanently, allowing a later hover to retry, and failures are logged with useful diagnostics.
+
+
+0.6.35: Hardens preview URL parsing for /thread/ and /post/ links, records the parent thread number for fallback lookups, recursively extracts the exact post from wrapped/array/keyed FoolFuuka API responses, and falls back to the thread API when the single-post endpoint does not return the requested post. Preview failure messages now expose the API's actual error instead of a generic unavailable notice.
+
+
+0.6.36: Fixes Archived.Moe preview retrieval for its hosted boards. The API request now includes browser credentials, an Archived.Moe page referrer, and an XMLHttpRequest indicator to better match the working direct-browser request. Removes the invalid Desuarchive fallback for Archived.Moe-only boards (which produced HTTP 422), and passes the known parent thread number into the thread-preview fallback.

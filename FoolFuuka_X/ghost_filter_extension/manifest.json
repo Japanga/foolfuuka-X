@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "FoolFuuka X",
-  "version": "0.6.32",
-  "description": "FoolFuuka X with archive post routing, cross-archive hover previews, and an expanded BBCode editor including underline formatting.",
+  "version": "0.6.39",
+  "description": "FoolFuuka X with archive post previews and persistent, cookie-authenticated image caching.",
   "permissions": [
     "storage"
   ],

@@ -690,21 +690,56 @@
     let hideTimer = null;
     let requestToken = 0;
     const cache = new Map();
+    const previewErrors = new Map();
 
     const parseArchiveLink = link => {
       let url;
       try { url = new URL(link.href || link.getAttribute('href'), location.href); } catch (_) { return null; }
+
+      const host = url.hostname.toLowerCase();
+      const isB4K = host === 'arch.b4k.dev';
+      const isArchivedMoe = host === 'archived.moe' || host.endsWith('.archived.moe');
+      const isDesuarchive = host === 'desuarchive.org' || host.endsWith('.desuarchive.org');
+      const isFourChan = host === 'boards.4chan.org' || host === 'boards.4channel.org';
+      const onDesuarchivePage = location.hostname === 'desuarchive.org' ||
+        location.hostname.endsWith('.desuarchive.org');
+
       const parts = url.pathname.split('/').filter(Boolean);
-      if (parts.length < 2) return null;
+      if (parts.length < 3) return null;
       const board = parts[0].toLowerCase();
       if (!/^[a-z0-9]+$/.test(board)) return null;
       const route = parts[1].toLowerCase();
       if (route !== 'thread' && route !== 'post') return null;
       const pathNumber = parts[2] || '';
       if (!/^\d+$/.test(pathNumber)) return null;
-      const hash = url.hash.match(/(?:^|[#&])(?:q|p)?(\d+)/i);
-      const postNumber = hash ? hash[1] : pathNumber;
-      return { board, postNumber, host: url.hostname, href: url.href };
+
+      // These boards are intentionally routed from Desuarchive (and its
+      // canonical 4chan quote links) to Archived.Moe. Preview them here too,
+      // but leave native Desuarchive links alone for boards it actually hosts.
+      const archivedMoeBoards = new Set([
+        '3', 'adv', 'b', 'bant', 'biz', 'ck', 'cm', 'diy', 'e', 'f', 'fa',
+        'gd', 'gif', 'h', 'hc', 'hm', 'hr', 'i', 'ic', 'jp', 'lgbt', 'lit',
+        'n', 'news', 'o', 'out', 'p', 'po', 'pol', 'pw', 'qst', 's', 's4s',
+        'sci', 'soc', 'sp', 't', 'toy', 'trv', 'tv', 'u', 'v', 'vip', 'vm',
+        'vmg', 'vp', 'vrpg', 'vst', 'vt', 'w', 'wg', 'wsr', 'x', 'xs', 'y'
+      ]);
+      const routedFromDesuarchive = (isDesuarchive || (onDesuarchivePage && isFourChan)) &&
+        archivedMoeBoards.has(board);
+
+      if (!isB4K && !isArchivedMoe && !routedFromDesuarchive) return null;
+
+      // On /post/ URLs the path is the post ID. On /thread/ URLs a
+      // fragment, when present, identifies the reply being previewed.
+      const hash = url.hash.match(/^#(?:q|p)?(\d+)(?:$|[&/])/i);
+      const postNumber = route === 'thread' && hash ? hash[1] : pathNumber;
+      // Tell the background worker which archive actually owns the target.
+      // This is important for source links whose original hostname is 4chan or
+      // Desuarchive but whose destination is Archived.Moe.
+      const previewHost = routedFromDesuarchive ? 'archived.moe' : host;
+      return {
+        board, postNumber, host: previewHost, href: url.href,
+        threadNumber: route === 'thread' ? pathNumber : null
+      };
     };
 
     const cleanComment = html => {
@@ -772,13 +807,104 @@
       }
       const body = document.createElement('div');
       body.className = 'ffx-archive-preview-body';
+
+      // FoolFuuka mirrors do not always expose media in exactly the same shape.
+      // Collect known URL fields from both post.media and post itself, including
+      // nested media objects, then resolve archive-relative paths against the
+      // archive that supplied the post (not necessarily the page being viewed).
       const media = post.media;
-      const thumb = media?.thumb_link || media?.media?.thumb_link;
-      if (thumb && String(media?.spoiler) !== '1') {
+      const isSpoiler = String(media?.spoiler ?? post?.spoiler ?? '0') === '1';
+      const mediaUrls = { thumb: [], original: [] };
+      const seenMediaObjects = new Set();
+      const addMediaUrl = (bucket, value) => {
+        if (typeof value !== 'string' || !value.trim()) return;
+        const raw = value.trim();
+        // FoolFuuka also returns filename-only fields such as media_orig and
+        // preview_orig. They are metadata, not fetchable URLs; accepting them
+        // here creates bogus archive-root URLs and breaks the original fallback.
+        if (/^(?:data:|javascript:|blob:)/i.test(raw)) return;
+        if (!/^(?:https?:)?\/\//i.test(raw) && !raw.startsWith('/') && !raw.includes('/')) return;
+        try {
+          const resolved = new URL(raw, `https://${target.host}/`);
+          if (resolved.protocol !== 'https:' && resolved.protocol !== 'http:') return;
+          if (!mediaUrls[bucket].includes(resolved.href)) mediaUrls[bucket].push(resolved.href);
+        } catch (_) {}
+      };
+      const collectMediaUrls = value => {
+        if (!value || typeof value !== 'object' || seenMediaObjects.has(value)) return;
+        seenMediaObjects.add(value);
+        for (const [key, item] of Object.entries(value)) {
+          const field = key.toLowerCase();
+          if (typeof item === 'string') {
+            if (/(?:thumb|thumbnail|preview)(?:_link|_url|url|src|_src)$/.test(field)) {
+              addMediaUrl('thumb', item);
+            } else if (/(?:remote_)?(?:media|file|image|attachment)(?:_link|_url|url|_src|src)$/.test(field)) {
+              addMediaUrl('original', item);
+            }
+          } else if (item && typeof item === 'object') {
+            collectMediaUrls(item);
+          }
+        }
+      };
+      collectMediaUrls(media);
+      // Some API variants put attachment fields directly on the post.
+      collectMediaUrls(post);
+
+      if (!isSpoiler && (mediaUrls.thumb.length || mediaUrls.original.length)) {
+        const thumbUrl = mediaUrls.thumb[0] || mediaUrls.original[0];
+        const originalUrl = mediaUrls.original.find(url => url !== thumbUrl) || mediaUrls.original[0] || thumbUrl;
+        const attachment = document.createElement('a');
+        attachment.href = originalUrl;
+        attachment.target = '_blank';
+        attachment.rel = 'noopener noreferrer';
+        attachment.title = 'Open archived attachment';
         const image = document.createElement('img');
-        image.src = thumb; image.alt = media.media_filename || 'Archived attachment';
-        image.loading = 'lazy';
-        body.appendChild(image);
+        image.alt = media?.media_filename || post?.media_filename || 'Archived attachment';
+        image.loading = 'eager';
+        image.referrerPolicy = 'strict-origin-when-cross-origin';
+
+        // Retrieve image bytes through the extension worker. Successful image
+        // responses are persisted in Cache Storage, so later hovers and page
+        // reloads reuse the image instead of re-requesting the archive/CDN.
+        // The worker uses the browser's existing site cookies; it never copies
+        // or stores Cloudflare cookies itself.
+        const requestCachedImage = url => new Promise(resolve => {
+          chrome.runtime.sendMessage({
+            type: 'FFX_GET_CACHED_IMAGE',
+            url,
+            referrer: `https://${target.host}/${target.board}/post/${target.postNumber}/`
+          }, response => {
+            if (chrome.runtime.lastError) return resolve({ ok: false, error: chrome.runtime.lastError.message });
+            resolve(response || { ok: false, error: 'No image response from extension worker' });
+          });
+        });
+        const showAttachmentFallback = () => {
+          attachment.remove();
+          const fallback = document.createElement('a');
+          fallback.href = originalUrl;
+          fallback.target = '_blank';
+          fallback.rel = 'noopener noreferrer';
+          fallback.textContent = '[Open archived attachment]';
+          body.insertBefore(fallback, body.firstChild);
+        };
+        const loadImage = async () => {
+          const candidates = [...new Set([thumbUrl, originalUrl].filter(Boolean))];
+          let lastError = '';
+          for (const url of candidates) {
+            const result = await requestCachedImage(url);
+            if (result?.ok && result.dataUrl) {
+              image.src = result.dataUrl;
+              attachment.href = originalUrl;
+              return;
+            }
+            lastError = result?.error || 'Image unavailable';
+          }
+          image.title = lastError;
+          showAttachmentFallback();
+        };
+        loadImage();
+        attachment.appendChild(image);
+        body.appendChild(attachment);
       }
       const comment = post.comment_processed || post.comment_sanitized || post.comment || '';
       body.appendChild(cleanComment(comment));
@@ -801,14 +927,31 @@
             type: 'FFX_FETCH_ARCHIVE_POST',
             board: target.board,
             postNumber: target.postNumber,
+            threadNumber: target.threadNumber,
             sourceHost: target.host
           }, response => {
-            if (chrome.runtime.lastError || !response?.post) return resolve(null);
+            if (chrome.runtime.lastError) {
+              console.warn('[FoolFuuka X] Archive preview message failed:', chrome.runtime.lastError.message);
+              return resolve(null);
+            }
+            if (!response?.post) {
+              const reason = response?.error || 'Archive API returned no post';
+              previewErrors.set(`${target.host}|${target.board}|${target.postNumber}`, reason);
+              console.warn(`[FoolFuuka X] No preview post returned for /${target.board}/${target.postNumber}:`, reason);
+              return resolve(null);
+            }
+            previewErrors.delete(`${target.host}|${target.board}|${target.postNumber}`);
             resolve(response.post);
           });
-        } catch (_) { resolve(null); }
+        } catch (error) {
+          console.warn('[FoolFuuka X] Could not request archive preview:', error);
+          resolve(null);
+        }
       });
       cache.set(key, promise);
+      // Do not permanently cache a failed lookup. Network/API failures can be
+      // transient, and the next hover should be allowed to retry.
+      promise.then(post => { if (!post && cache.get(key) === promise) cache.delete(key); });
       return promise;
     };
 
@@ -825,7 +968,8 @@
         popup.replaceChildren();
         const error = document.createElement('div');
         error.className = 'ffx-archive-preview-error';
-        error.textContent = 'Preview unavailable for this archived post.';
+        const errorKey = `${target.host}|${target.board}|${target.postNumber}`;
+        error.textContent = `Preview unavailable: ${previewErrors.get(errorKey) || 'post not returned by archive'}`;
         popup.appendChild(error);
         return;
       }
