@@ -1470,7 +1470,26 @@
       media.src = url; media.controls = true; media.preload = "metadata";
       media.playsInline = true;
     } else {
-      media.src = url; media.alt = "Catbox image preview"; media.loading = "lazy";
+      media.alt = "Catbox image preview";
+      // These are inserted dynamically into archive posts. Eager loading avoids
+      // lazy-load edge cases for newly-created embeds and hover previews.
+      media.loading = "eager";
+      media.decoding = "async";
+      media.src = url;
+
+      // Catbox occasionally fails the first image request when the archive page's
+      // referrer/cache state is unusual. Retry once without a referrer; the URL's
+      // fragment is client-side only and forces the browser to issue a fresh load.
+      media.addEventListener("error", () => {
+        if (media.dataset.ffxCatboxRetried === "1") return;
+        media.dataset.ffxCatboxRetried = "1";
+        media.referrerPolicy = "no-referrer";
+        try {
+          const retryUrl = new URL(url);
+          retryUrl.hash = "ffx-retry";
+          media.src = retryUrl.href;
+        } catch (_) { /* Keep the original failed image if the URL cannot be retried. */ }
+      }, { once: true });
     }
     return media;
   }
