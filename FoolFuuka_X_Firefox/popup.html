@@ -1,0 +1,26 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FoolFuuka X</title>
+<style>
+body{width:330px;margin:0;padding:14px;font:13px/1.45 Arial,sans-serif;color:#ddd;background:#292929}
+h1{margin:0 0 4px;font-size:18px}.brand{display:flex;align-items:center;gap:14px;margin:0 0 12px}.brand img{width:88px;height:88px;object-fit:contain;flex:0 0 88px}.brand p{margin:0}h2{font-size:13px;margin:15px 0 6px}
+.count{margin:12px 0;padding:10px;background:#383838;border-radius:4px}
+button{padding:7px 10px;cursor:pointer;background:#3b3b3b;color:#bbb;border:1px solid #666;border-radius:3px}
+textarea{box-sizing:border-box;width:100%;min-height:82px;resize:vertical;padding:8px;background:#202020;color:#ddd;border:1px solid #555;border-radius:4px;font:12px/1.5 Arial,sans-serif}
+#status{min-height:18px;color:#aaa}.note{font-size:11px;color:#888}.actions{display:flex;gap:7px;flex-wrap:wrap}.setting{display:flex;gap:8px;align-items:flex-start;margin:8px 0}.setting input{margin-top:3px}
+</style></head><body>
+<div class="brand"><img src="icons/FoolFuukaX-128.png" alt="FoolFuuka X icon"><div><h1>FoolFuuka X</h1><p>Enhancements for Desuarchive and FoolFuuka archives.</p></div></div>
+<div class="count">Hidden posts: <strong id="count">…</strong></div>
+<h2>Catbox links (Desuarchive)</h2>
+<label class="setting"><input type="checkbox" id="catbox-embed"><span><strong>Instantly embed Catbox media</strong><br><span class="note">When enabled, images and MP4 videos from files.catbox.moe appear directly in posts. When disabled, links remain clickable and show a hover preview.</span></span></label>
+<h2>Keyword auto-filter</h2>
+<p class="note">One keyword or phrase per line. Matching ghost posts are hidden automatically.</p>
+<textarea id="keywords" spellcheck="false" placeholder="keyword one&#10;another phrase"></textarea>
+<div class="actions"><button id="save-keywords">Save keywords</button></div>
+<h2>Username auto-filter</h2>
+<p class="note">One exact username per line. Matching ghost posts are hidden automatically. Matching is case-insensitive.</p>
+<textarea id="usernames" spellcheck="false" placeholder="username one&#10;another_username"></textarea>
+<div class="actions"><button id="save-usernames">Save usernames</button><button id="clear">Clear hidden-post list</button></div>
+<p id="status" role="status"></p>
+<p class="note">Keyword and username rules are independent. Individual Hide buttons remain available.</p>
+<p class="note">Version 0.6.52 · FoolFuuka X</p><script src="popup.js"></script>
+</body></html>
