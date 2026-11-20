@@ -7,6 +7,9 @@ Installing FoolFuuka X on Chrome:
 <img src="https://i.imgur.com/nVBGCao.png" alt="Project Screenshot" width="600">
  
 Installing FoolFuuka X on Firefox:
-1. Go to about:debugging#/runtime/this-firefox
-2. Add the .xpi file
-<img src="https://i.imgur.com/0TalqAP.png" alt="Project Screenshot" width="600">
+1. Click "manage extensions"
+2. Enter the Mozilla addons search window/site and search for "FoolFuuka X"
+3. Install FoolFuuka X from the Mozilla Addons.
+<img src="https://i.imgur.com/TIYxXWN.png" alt="Project Screenshot" width="600">
+
+<img src="https://i.imgur.com/MaG4cmK.png" alt="Project Screenshot" width="600">
